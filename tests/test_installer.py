@@ -4,12 +4,14 @@ from pathlib import Path
 import pytest
 
 from godot_mcp import installer
+from godot_mcp.bridge import ToolError
 
 
 def project(tmp_path: Path) -> Path:
     root = tmp_path / "project"
     (root / "addons/godot_mcp").mkdir(parents=True)
     (root / "addons/godot_mcp/plugin.cfg").write_text("old addon")
+    (root / ".godot-mcp").mkdir()
     (root / "project.godot").write_text("[application]\nconfig/name=Keep\n")
     return root
 
@@ -75,3 +77,41 @@ def test_install_project_rolls_back_everything_when_registration_fails(tmp_path,
     assert (root / "project.godot").read_bytes() == old_project
     assert (root / "addons/godot_mcp/plugin.cfg").read_bytes() == old_addon
     assert config.read_bytes() == old_config
+
+
+def test_stale_previous_version_endpoint_allows_install(monkeypatch, tmp_path):
+    root = project(tmp_path)
+    endpoint = root / ".godot-mcp/endpoint.json"
+    endpoint.write_text(json.dumps({"project": str(root), "pid": 12345, "version": "v4.7.2_0"}))
+    monkeypatch.setattr(installer.psutil, "pid_exists", lambda pid: False)
+    record = installer.install_project(root, tmp_path / "server", tmp_path / "home")
+    assert record["status"] == "installed"
+
+
+def test_live_previous_version_endpoint_blocks_before_edits(monkeypatch, tmp_path):
+    root = project(tmp_path)
+    old_project = (root / "project.godot").read_bytes()
+    old_addon = (root / "addons/godot_mcp/plugin.cfg").read_bytes()
+    (root / ".godot-mcp/endpoint.json").write_text(json.dumps({"project": str(root), "pid": 12345, "version": "v4.7.2_0"}))
+    monkeypatch.setattr(installer.psutil, "pid_exists", lambda pid: True)
+
+    async def mismatch(*_args, **_kwargs):
+        raise ToolError("VERSION_MISMATCH", "old plugin")
+
+    monkeypatch.setattr("godot_mcp.bridge.EditorBridge.call", mismatch)
+    with pytest.raises(ValueError, match="Close this project"):
+        installer.install_project(root, tmp_path / "server", tmp_path / "home")
+    assert (root / "project.godot").read_bytes() == old_project
+    assert (root / "addons/godot_mcp/plugin.cfg").read_bytes() == old_addon
+
+
+@pytest.mark.parametrize("payload", ["{bad", "[]"])
+def test_malformed_endpoint_is_actionable_and_non_mutating(tmp_path, payload):
+    root = project(tmp_path)
+    old_project = (root / "project.godot").read_bytes()
+    old_addon = (root / "addons/godot_mcp/plugin.cfg").read_bytes()
+    (root / ".godot-mcp/endpoint.json").write_text(payload)
+    with pytest.raises(ValueError, match="endpoint"):
+        installer.install_project(root, tmp_path / "server", tmp_path / "home")
+    assert (root / "project.godot").read_bytes() == old_project
+    assert (root / "addons/godot_mcp/plugin.cfg").read_bytes() == old_addon

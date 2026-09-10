@@ -1,3 +1,8 @@
+# v4.7.2_2
+
+- Allow updates when a stopped editor leaves a previous-version endpoint behind. The installer verifies the recorded process is gone before disregarding that stale endpoint; running editors still block plugin updates.
+- Includes the automatic Godot discovery and warning-free uv installation improvements from v4.7.2_1.
+
 # v4.7.2_1
 
 - Automatically locate and validate Godot; prompt for its executable only when discovery fails. `--godot` remains an override; `--yes` never waits for input.

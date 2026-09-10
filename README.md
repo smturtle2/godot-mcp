@@ -89,7 +89,7 @@ Typical tasks include:
 | Component | Version |
 | --- | --- |
 | Godot engine | 4.7.2 |
-| Product tag | `v4.7.2_1` |
+| Product tag | `v4.7.2_2` |
 | MCP protocol | `2026-07-28` |
 | Python | 3.13 |
 | License | EUPL-1.2 |

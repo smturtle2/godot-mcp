@@ -103,7 +103,7 @@ The bootstrap prepares uv and Python 3.13, selects the newest stable revision co
 
 The installer detects Godot from PATH and common application locations and verifies its version. It asks for the executable path only if detection fails; `--godot PATH` always overrides discovery. With `--yes`, failed detection exits with guidance instead of prompting. Interactive defaults cover the install home, optional project, and detected client configuration. Unix piped installation uses `/dev/tty`. For unattended installation, download the wrapper and pass `--yes`, `--godot PATH`, `--home PATH`, and optional `--project PATH` / `--client-config PATH`. Omit the client config for copyable manual settings.
 
-Re-running the bootstrap updates recorded projects and clients. `--version v4.7.2_1` pins an exact stable release; `--repair` prepares a fresh environment. Prior environments are retained. Close linked editors before updates or rollback. Rollback restores pre-install snapshots, including client/project settings; preserve later edits separately before explicitly rolling back.
+Re-running the bootstrap updates recorded projects and clients. `--version v4.7.2_2` pins an exact stable release; `--repair` prepares a fresh environment. Prior environments are retained. Close linked editors before updates or rollback. Rollback restores pre-install snapshots, including client/project settings; preserve later edits separately before explicitly rolling back.
 
 Keep `.godot-mcp/` out of project version control; it contains machine-local linking data and an authentication token. The runtime autoload is inert when the engine debugger is unavailable. If you use a custom installation home, pass that same `--home` when linking additional projects.
 

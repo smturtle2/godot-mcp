@@ -16,6 +16,8 @@ import tempfile
 import time
 from pathlib import Path
 
+import psutil
+
 from .bootstrap import installation_environment, probe_godot, resolve_godot
 from .client_config import _atomic_write, register_client, register_global_client
 from .version import ENGINE_VERSION, PRODUCT_VERSION
@@ -130,7 +132,17 @@ def install_project(project: Path, executable: Path, home: Path, config: Path | 
     updated = enable_plugin(project_file.read_text(encoding='utf-8'))
     # Refuse to race an active editor, which can overwrite project/plugin changes.
     endpoint = project / '.godot-mcp/endpoint.json'
+    descriptor = {}
     if endpoint.exists():
+        try:
+            descriptor = json.loads(endpoint.read_text())
+        except (OSError, ValueError) as exc:
+            raise ValueError('Cannot read the editor endpoint. Close Godot and remove the stale endpoint before retrying.') from exc
+        if not isinstance(descriptor, dict):
+            raise ValueError('Invalid editor endpoint; close Godot and remove it before retrying.')
+    editor_pid = descriptor.get('pid')
+    known_dead = isinstance(editor_pid, int) and editor_pid > 0 and not psutil.pid_exists(editor_pid)
+    if endpoint.exists() and not known_dead:
         from .bridge import EditorBridge, ToolError
         try:
             asyncio.run(EditorBridge(project, timeout=2).call('get_context', {}))

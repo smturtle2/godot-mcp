@@ -125,9 +125,13 @@ def verify(source: Path, godot: str, work_dir: Path | None) -> dict:
                 os.killpg(editor.pid, 9)
                 editor.wait(timeout=5)
             editor_log.close()
+        previous_endpoint = json.loads(endpoint.read_text())
+        previous_endpoint.update({'pid': editor.pid, 'version': 'v0.0.0_0'})
+        endpoint.write_text(json.dumps(previous_endpoint, indent=2), encoding='utf-8')
         second = run(installer, cwd=source, env=installer_env, timeout=90)
         second_executable = installed_executable(home)
         assert second_executable == executable
+        stale_endpoint_update_passed = True
         repair = run(installer + ["--repair"], cwd=source, env=installer_env, timeout=90)
         repaired_executable = installed_executable(home)
         transactions = list((home / "transactions").iterdir())
@@ -138,6 +142,7 @@ def verify(source: Path, godot: str, work_dir: Path | None) -> dict:
         return {"ok": True, "project": str(project), "install_home": str(home), "executable": str(executable),
                 "second_executable": str(second_executable), "reused_on_reinstall": executable == second_executable,
                 "repaired_executable": str(repaired_executable), "repair_created_new": repaired_executable != second_executable,
+                "stale_endpoint_update_passed": stale_endpoint_update_passed,
                 "transaction_count": len(transactions),
                 "version": version.stdout.strip(), "global_smoke": global_smoke,
                 "check_before_editor_exit": check_before.returncode,

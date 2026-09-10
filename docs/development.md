@@ -59,7 +59,7 @@ Start with the official Godot [release archive](https://godotengine.org/download
 4. Run `uv run scripts/sync_version.py` and `uv run scripts/generate_tool_docs.py`.
 5. Map each changed API to its module in [architecture](architecture.md), then run unit/contract tests and the real editor integration suite.
 6. Exercise all 42 tools through representative workflows, including editor edits, save/undo, runtime input/capture, debugger, and export. Record failures by scope; do not infer support for untested platforms or engine versions.
-7. Run the synchronization checks, full test suite, and release build. Confirm the source tag and manifest use the product version (current baseline: `v4.7.2_1`).
+7. Run the synchronization checks, full test suite, and release build. Confirm the source tag and manifest use the product version (current baseline: `v4.7.2_2`).
 
 Known debugger behavior must remain explicit: pausing outside a script frame cannot be stepped, and this target does not implement `step_out`. Preserve user breakpoints when changing MCP-owned breakpoints.
 
@@ -68,7 +68,7 @@ Known debugger behavior must remain explicit: pausing outside a script frame can
 Before publishing, use a clean environment to validate installation, editor connection, the 42-tool catalog, and representative runtime operations. Inspect the generated manifest, SHA-256 values, and source archive contents. Publish only after QA passes:
 
 ```bash
-gh release create v4.7.2_1 dist/release/* --title "godot-mcp v4.7.2_1" --generate-notes
+gh release create v4.7.2_2 dist/release/* --title "godot-mcp v4.7.2_2" --generate-notes
 ```
 
 Update existing installations only after the new release is available and its checks pass. Keep the prior installation record for rollback. The release process is intentionally separate from source changes; do not publish from an unreviewed working tree.
