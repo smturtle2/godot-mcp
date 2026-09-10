@@ -1,0 +1,29 @@
+name: Release
+on:
+  push:
+    tags: ['v*.*.*_*']
+permissions:
+  contents: read
+jobs:
+  verify:
+    uses: ./.github/workflows/ci.yml
+  release:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v8
+      - run: uv sync --frozen --python 3.13
+      - name: Check tag and build
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          uv run python -c 'import os; from godot_mcp.version import PRODUCT_VERSION; assert os.environ["RELEASE_TAG"] == PRODUCT_VERSION'
+          uv run scripts/build_release.py
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release create "$RELEASE_TAG" dist/release/* --verify-tag --draft --title "$RELEASE_TAG" --notes-file CHANGELOG.md

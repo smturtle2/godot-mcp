@@ -1,0 +1,285 @@
+extends Node
+## Inert without an attached editor debugger. No network listener in game builds.
+const Codec = preload("res://addons/godot_mcp/codec.gd")
+const LogBuffer = preload("res://addons/godot_mcp/log_buffer.gd")
+var held: Dictionary = {}
+var captures: Dictionary = {}
+var logs: Logger
+var busy: bool = false
+var active: bool = false
+
+func _ready() -> void:
+	if not EngineDebugger.is_active():
+		set_process(false)
+		return
+	process_mode = Node.PROCESS_MODE_ALWAYS
+	active = true
+	logs = LogBuffer.new()
+	OS.add_logger(logs)
+	EngineDebugger.register_message_capture("godot_mcp", _capture)
+	EngineDebugger.send_message("godot_mcp:ready", [{"pid": OS.get_process_id(), "renderer": RenderingServer.get_current_rendering_method(), "display": DisplayServer.get_name()}])
+
+func _exit_tree() -> void:
+	if active:
+		release_input()
+		EngineDebugger.unregister_message_capture("godot_mcp")
+		OS.remove_logger(logs)
+
+func _capture(message: String, data: Array) -> bool:
+	if message != "request" or data.size() != 3: return false
+	_handle(int(data[0]), str(data[1]), data[2])
+	return true
+
+func _handle(id: int, method: String, p: Dictionary) -> void:
+	if busy:
+		EngineDebugger.send_message("godot_mcp:result", [id, fail("RUNTIME_BUSY", "A runtime request is already running.")])
+		return
+	busy = true
+	var result: Dictionary = await dispatch(method, p)
+	result.observed_at_usec = Time.get_ticks_usec()
+	result.frame = Engine.get_process_frames()
+	EngineDebugger.send_message("godot_mcp:result", [id, result])
+	busy = false
+
+func fail(code: String, message: String) -> Dictionary:
+	return {"error": {"code": code, "message": message}}
+
+func node_at(ref: Dictionary) -> Node:
+	var path: String = ref.get("path", "/root")
+	if not path.begins_with("/root") or ".." in path.split("/"): return null
+	return get_node_or_null(NodePath(path))
+
+func property_exists(object: Object, property: String) -> bool:
+	for prop: Dictionary in object.get_property_list():
+		if str(prop.name) == property: return true
+	return false
+
+func dispatch(method: String, p: Dictionary) -> Dictionary:
+	match method:
+		"inspect_runtime":
+			var node := node_at(p.get("node", {}))
+			if not node: return fail("NODE_NOT_FOUND", "Runtime node does not exist.")
+			return {"node": describe(node, p.get("properties", []), int(p.get("depth", 0))), "scene": get_tree().current_scene.scene_file_path if get_tree().current_scene else null}
+		"capture_viewport": return await capture(p)
+		"send_input": return await send_input(p)
+		"wait_for_condition": return await wait_condition(p.condition, int(p.get("timeout_ms", 5000)), int(p.get("poll_ms", 16)))
+		"sample_performance": return await sample_performance(p)
+		"release_input":
+			release_input()
+			return {"released": true}
+		"get_diagnostics": return logs.read(int(p.get("since", 0)), int(p.get("limit", 200)))
+	return fail("UNKNOWN_TOOL", method)
+
+func describe(node: Node, properties: Array, depth: int) -> Dictionary:
+	var values: Dictionary = {}
+	var names: Array = properties
+	if names.is_empty():
+		names = ["position", "rotation", "visible", "process_mode"]
+	for property: String in names:
+		if property_exists(node, property): values[property] = Codec.encode(node.get(property))
+	var result: Dictionary = {"path": str(node.get_path()), "class": node.get_class(), "properties": values, "children": []}
+	if depth > 0:
+		var count: int = 0
+		for child: Node in node.get_children():
+			if count >= 500:
+				result.truncated = true
+				break
+			result.children.append(describe(child, properties, depth - 1))
+			count += 1
+	return result
+
+func capture(p: Dictionary) -> Dictionary:
+	if DisplayServer.get_name() == "headless": return fail("RENDERER_UNAVAILABLE", "Game capture requires an actual rendering display.")
+	await RenderingServer.frame_post_draw
+	var image: Image = get_viewport().get_texture().get_image()
+	if not image or image.is_empty(): return fail("CAPTURE_FAILED", "Game viewport has no image.")
+	var original: Vector2i = image.get_size()
+	var rect := Rect2i(Vector2i.ZERO, original)
+	if p.has("rect"):
+		rect = Rect2i(Vector2i(Codec.v2(p.rect.origin)), Vector2i(Codec.v2(p.rect.size))).intersection(rect)
+		if not rect.has_area(): return fail("INVALID_RECT", "Capture rectangle is outside the viewport.")
+		image = image.get_region(rect)
+	var scale: float = minf(1.0, minf(float(p.get("max_width", 1280)) / image.get_width(), float(p.get("max_height", 1280)) / image.get_height()))
+	if scale < 1: image.resize(maxi(1, int(image.get_width() * scale)), maxi(1, int(image.get_height() * scale)))
+	var uri: String = "godot://captures/" + str(OS.get_process_id()) + "/" + str(Time.get_ticks_usec()) + ".png"
+	captures[uri] = {"rect": rect, "size": image.get_size(), "original": original, "viewport": get_viewport().get_visible_rect().size}
+	if captures.size() > 32: captures.erase(captures.keys()[0])
+	return {"uri": uri, "image_base64": Marshalls.raw_to_base64(image.save_png_to_buffer()), "width": image.get_width(), "height": image.get_height(), "viewport_size": Codec.encode(get_viewport().get_visible_rect().size), "pixel_size": Codec.encode(original), "crop": Codec.encode(rect), "coordinate_space": "capture pixels; pass capture_uri to send_input"}
+
+func release_input() -> void:
+	for event: InputEvent in held.values():
+		if event is InputEventKey or event is InputEventMouseButton or event is InputEventScreenTouch or event is InputEventAction:
+			event.pressed = false
+			Input.parse_input_event(event)
+	held.clear()
+
+func event_key(spec: Dictionary) -> String:
+	return str(spec.type) + ":" + str(spec.get("key", spec.get("button", spec.get("action", spec.get("index", 0)))))
+
+func make_event(spec: Dictionary, capture_uri: String) -> Dictionary:
+	var position := Codec.v2(spec.get("position", {}))
+	if not capture_uri.is_empty() and spec.has("position"):
+		if not captures.has(capture_uri): return fail("STALE_CAPTURE", "Capture metadata expired or belongs to another run.")
+		var info: Dictionary = captures[capture_uri]
+		position = (Vector2(info.rect.position) + position * Vector2(info.rect.size) / Vector2(info.size)) * Vector2(info.viewport) / Vector2(info.original)
+	var event: InputEvent
+	match str(spec.get("type", "")):
+		"key":
+			var code: int = OS.find_keycode_from_string(str(spec.get("key", "")))
+			if code == KEY_NONE: return fail("INVALID_KEY", "Unknown key name.")
+			var key := InputEventKey.new()
+			key.keycode = code
+			if spec.get("physical", false): key.physical_keycode = code
+			key.pressed = spec.get("pressed", false)
+			event = key
+		"mouse_button":
+			var buttons := {"left": MOUSE_BUTTON_LEFT, "right": MOUSE_BUTTON_RIGHT, "middle": MOUSE_BUTTON_MIDDLE, "wheel_up": MOUSE_BUTTON_WHEEL_UP, "wheel_down": MOUSE_BUTTON_WHEEL_DOWN}
+			if not buttons.has(spec.get("button", "")): return fail("INVALID_BUTTON", "Unknown mouse button.")
+			var mouse := InputEventMouseButton.new()
+			mouse.button_index = buttons[spec.button]
+			mouse.position = position
+			mouse.global_position = position
+			mouse.pressed = spec.get("pressed", false)
+			event = mouse
+		"mouse_motion":
+			var mouse := InputEventMouseMotion.new()
+			mouse.position = position
+			mouse.global_position = position
+			mouse.relative = Codec.v2(spec.get("relative", {}))
+			event = mouse
+		"touch":
+			var touch := InputEventScreenTouch.new()
+			touch.index = int(spec.get("index", 0))
+			touch.position = position
+			touch.pressed = spec.get("pressed", false)
+			event = touch
+		"drag":
+			var touch := InputEventScreenDrag.new()
+			touch.index = int(spec.get("index", 0))
+			touch.position = position
+			touch.relative = Codec.v2(spec.get("relative", {}))
+			event = touch
+		"action":
+			if not InputMap.has_action(spec.get("action", "")): return fail("ACTION_NOT_FOUND", "The input action is not defined.")
+			var action := InputEventAction.new()
+			action.action = str(spec.action)
+			action.pressed = spec.get("pressed", false)
+			action.strength = float(spec.get("strength", 1))
+			event = action
+		_: return fail("INVALID_EVENT", "Unsupported input event type.")
+	if event is InputEventWithModifiers:
+		event.shift_pressed = spec.get("shift", false)
+		event.ctrl_pressed = spec.get("ctrl", false)
+		event.alt_pressed = spec.get("alt", false)
+		event.meta_pressed = spec.get("meta", false)
+	return {"event": event}
+
+func signal_seen(watch: Dictionary) -> void:
+	watch.seen = true
+
+func watch_condition(condition: Dictionary) -> Dictionary:
+	if condition.get("type", "") != "signal": return {}
+	var node := node_at(condition.get("node", {}))
+	var name: String = condition.get("signal", "")
+	if not node or not node.has_signal(name): return fail("SIGNAL_NOT_FOUND", "Signal condition target does not exist.")
+	var count: int = 0
+	for signal_info: Dictionary in node.get_signal_list():
+		if str(signal_info.name) == name: count = signal_info.args.size()
+	var watch: Dictionary = {"node": node, "signal": name, "seen": false}
+	var callback: Callable = signal_seen.bind(watch).unbind(count)
+	watch.callback = callback
+	node.connect(name, callback)
+	return watch
+
+func unwatch(watch: Dictionary) -> void:
+	if watch.has("node") and is_instance_valid(watch.node) and watch.node.is_connected(watch.signal, watch.callback):
+		watch.node.disconnect(watch.signal, watch.callback)
+
+func observation(condition: Dictionary, watch: Dictionary) -> Dictionary:
+	var kind: String = condition.get("type", "")
+	if kind == "scene":
+		var current: String = get_tree().current_scene.scene_file_path if get_tree().current_scene else ""
+		return {"satisfied": current == condition.get("uri", ""), "value": current}
+	if kind == "signal": return {"satisfied": watch.get("seen", false), "value": watch.get("seen", false)}
+	var node := node_at(condition.get("node", {}))
+	if kind == "node": return {"satisfied": (node != null) == bool(condition.get("exists", true)), "value": node != null}
+	if not node: return {"satisfied": false, "value": null, "reason": "node_missing"}
+	var property: String = condition.get("property", "")
+	if not property_exists(node, property): return fail("PROPERTY_NOT_FOUND", "Condition property does not exist.")
+	var actual: Variant = node.get(property)
+	var expected: Variant = Codec.decode(condition.get("value"))
+	var operator: String = condition.get("operator", "eq")
+	var yes: bool = false
+	if operator in ["gt", "gte", "lt", "lte"] and not ((actual is float or actual is int) and (expected is float or expected is int)):
+		return fail("INVALID_COMPARISON", "Ordering comparisons require numbers.")
+	match operator:
+		"eq": yes = actual == expected if typeof(actual) == typeof(expected) or ((actual is int or actual is float) and (expected is int or expected is float)) else false
+		"ne": yes = actual != expected if typeof(actual) == typeof(expected) or ((actual is int or actual is float) and (expected is int or expected is float)) else true
+		"gt": yes = actual > expected
+		"gte": yes = actual >= expected
+		"lt": yes = actual < expected
+		"lte": yes = actual <= expected
+	return {"satisfied": yes, "value": Codec.encode(actual)}
+
+func wait_condition(condition: Dictionary, timeout: int, poll: int, existing_watch: Dictionary = {}) -> Dictionary:
+	var watch: Dictionary = existing_watch if not existing_watch.is_empty() else watch_condition(condition)
+	if watch.has("error"): return watch
+	var start: int = Time.get_ticks_msec()
+	var last: Dictionary = observation(condition, watch)
+	while not last.has("error") and not last.get("satisfied", false) and Time.get_ticks_msec() - start < timeout:
+		await get_tree().create_timer(minf(float(poll) / 1000, float(timeout - (Time.get_ticks_msec() - start)) / 1000), true).timeout
+		last = observation(condition, watch)
+	unwatch(watch)
+	last.elapsed_ms = Time.get_ticks_msec() - start
+	last.timed_out = not last.has("error") and not last.get("satisfied", false)
+	return last
+
+func send_input(p: Dictionary) -> Dictionary:
+	var events: Array[Dictionary] = []
+	var previous: int = -1
+	for spec: Dictionary in p.get("events", []):
+		var time: int = int(spec.get("at_ms", 0))
+		if time < previous: return fail("INVALID_SEQUENCE", "Event at_ms values must be nondecreasing.")
+		previous = time
+		var made: Dictionary = make_event(spec, str(p.get("capture_uri", "")))
+		if made.has("error"): return made
+		events.append({"at_ms": time, "event": made.event, "spec": spec})
+	var watch: Dictionary = watch_condition(p.get("wait_for", {}))
+	if watch.has("error"): return watch
+	var start: int = Time.get_ticks_msec()
+	for item: Dictionary in events:
+		while Time.get_ticks_msec() - start < item.at_ms: await get_tree().process_frame
+		Input.parse_input_event(item.event)
+		if item.spec.has("pressed"):
+			var key: String = event_key(item.spec)
+			if item.spec.pressed: held[key] = item.event.duplicate()
+			else: held.erase(key)
+		await get_tree().process_frame
+	var result: Dictionary = {"processed": events.size(), "elapsed_ms": Time.get_ticks_msec() - start}
+	if p.get("release_after", false): release_input()
+	result.held_inputs = held.size()
+	if p.has("wait_for"): result.condition = await wait_condition(p.wait_for, int(p.get("timeout_ms", 5000)), 16, watch)
+	else: unwatch(watch)
+	if p.get("capture_after", false): result.capture = await capture({})
+	return result
+
+func sample_performance(p: Dictionary) -> Dictionary:
+	var metrics: Dictionary = {"process_ms": [Performance.TIME_PROCESS, 1000.0, "ms"], "physics_ms": [Performance.TIME_PHYSICS_PROCESS, 1000.0, "ms"], "fps": [Performance.TIME_FPS, 1.0, "frames/s"], "memory_bytes": [Performance.MEMORY_STATIC, 1.0, "bytes"], "objects": [Performance.OBJECT_COUNT, 1.0, "count"], "draw_calls": [Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME, 1.0, "calls/frame"], "primitives": [Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME, 1.0, "primitives/frame"], "video_memory_bytes": [Performance.RENDER_VIDEO_MEM_USED, 1.0, "bytes"]}
+	var results: Dictionary = {}
+	for name: String in p.get("metrics", []):
+		if not metrics.has(name) or (DisplayServer.get_name() == "headless" and name in ["draw_calls", "primitives", "video_memory_bytes"]): return fail("UNSUPPORTED_METRIC", "Metric is unavailable in this runtime: " + name)
+		results[name] = {"unit": metrics[name][2], "min": INF, "max": -INF, "sum": 0.0}
+	var count: int = 0
+	var start: int = Time.get_ticks_msec()
+	while count == 0 or Time.get_ticks_msec() - start < int(p.get("duration_ms", 1000)):
+		await get_tree().process_frame
+		for name: String in results:
+			var value: float = Performance.get_monitor(metrics[name][0]) * metrics[name][1]
+			results[name].min = minf(results[name].min, value)
+			results[name].max = maxf(results[name].max, value)
+			results[name].sum += value
+		count += 1
+	for name: String in results:
+		results[name].mean = results[name].sum / count
+		results[name].erase("sum")
+	return {"metrics": results, "samples": count, "elapsed_ms": Time.get_ticks_msec() - start, "conditions": {"display": DisplayServer.get_name(), "renderer": RenderingServer.get_current_rendering_method(), "engine": Engine.get_version_info().string, "monitor_cadence": "Engine Performance monitors sampled each process frame"}}

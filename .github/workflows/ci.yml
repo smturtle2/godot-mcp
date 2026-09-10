@@ -1,0 +1,43 @@
+name: Verify
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v8
+        with:
+          enable-cache: true
+      - run: uv sync --frozen --python 3.13
+      - run: uv run ruff check .
+      - run: uv run pytest -q
+      - run: uv run scripts/sync_version.py --check
+      - run: uv run scripts/generate_tool_docs.py --check
+      - name: Install matching Godot
+        shell: bash
+        run: |
+          engine=$(uv run python -c 'from godot_mcp.version import ENGINE_VERSION; print(ENGINE_VERSION)')
+          base="https://github.com/godotengine/godot-builds/releases/download/${engine}-stable"
+          mkdir -p "$RUNNER_TEMP/godot"
+          cd "$RUNNER_TEMP/godot"
+          curl -fLsS "$base/Godot_v${engine}-stable_linux.x86_64.zip" -o "Godot_v${engine}-stable_linux.x86_64.zip"
+          curl -fLsS "$base/SHA512-SUMS.txt" -o SHA512-SUMS.txt
+          sha512sum --check --ignore-missing SHA512-SUMS.txt
+          unzip -q "Godot_v${engine}-stable_linux.x86_64.zip"
+          mv "Godot_v${engine}-stable_linux.x86_64" godot
+          chmod +x godot
+          echo "$RUNNER_TEMP/godot" >> "$GITHUB_PATH"
+      - name: Editor, game, debugger and export acceptance
+        run: xvfb-run -a env GODOT_MCP_INTEGRATION=1 uv run pytest -q tests/test_editor_integration.py
+      - name: Package and clean installation
+        run: |
+          uv run scripts/build_release.py
+          uv run scripts/verify_install.py

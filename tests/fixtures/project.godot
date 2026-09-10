@@ -1,0 +1,16 @@
+config_version=5
+
+[application]
+config/name="Godot MCP integration"
+run/main_scene="res://main.tscn"
+
+[display]
+window/size/viewport_width=480
+window/size/viewport_height=320
+
+[rendering]
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+
+[editor_plugins]
+enabled=PackedStringArray("res://addons/godot_mcp/plugin.cfg")

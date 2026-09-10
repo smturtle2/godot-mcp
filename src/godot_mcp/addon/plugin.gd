@@ -1,0 +1,383 @@
+@tool
+extends EditorPlugin
+## All editor mutations are serialized here, on Godot's main thread.
+const Version = preload("res://addons/godot_mcp/version.gd")
+const Codec = preload("res://addons/godot_mcp/codec.gd")
+const LogBuffer = preload("res://addons/godot_mcp/log_buffer.gd")
+const Scenes = preload("res://addons/godot_mcp/scenes.gd")
+const Documents = preload("res://addons/godot_mcp/documents.gd")
+const Resources = preload("res://addons/godot_mcp/resources.gd")
+const Animations = preload("res://addons/godot_mcp/animations.gd")
+const Tiles = preload("res://addons/godot_mcp/tiles.gd")
+const Assets = preload("res://addons/godot_mcp/assets.gd")
+const Runtime = preload("res://addons/godot_mcp/runtime_tools.gd")
+const Debugger = preload("res://addons/godot_mcp/debugger.gd")
+var listener := TCPServer.new()
+var peers: Array[Dictionary] = []
+var token: String = ""
+var epoch: String = ""
+var busy: bool = false
+var enabled: bool = false
+var added_autoload: bool = false
+var resources: Dictionary = {}
+var edits: Array[Dictionary] = []
+var modules: Array[RefCounted] = []
+var documents: RefCounted
+var runtime: RefCounted
+var debugger: EditorDebuggerPlugin
+var logs: Logger
+var status_label: Label
+var registry_path: String = ""
+
+func _enter_tree() -> void:
+	var engine: Dictionary = Engine.get_version_info()
+	var actual := "%s.%s.%s" % [engine.major, engine.minor, engine.patch]
+	status_label = Label.new()
+	add_control_to_container(CONTAINER_TOOLBAR, status_label)
+	if actual != Version.ENGINE:
+		status_label.text = "Godot MCP · Unsupported Godot " + actual
+		return
+	epoch = Crypto.new().generate_random_bytes(8).hex_encode()
+	token = Crypto.new().generate_random_bytes(32).hex_encode()
+	logs = LogBuffer.new()
+	OS.add_logger(logs)
+	documents = Documents.new(self)
+	runtime = Runtime.new(self)
+	modules = [Scenes.new(self), documents, Resources.new(self), Animations.new(self), Tiles.new(self), Assets.new(self), runtime]
+	debugger = Debugger.new()
+	debugger.host = self
+	add_debugger_plugin(debugger)
+	var autoload: String = ProjectSettings.get_setting("autoload/GodotMCPRuntime", "")
+	var autoload_path: String = autoload.trim_prefix("*")
+	if autoload_path.begins_with("uid://"):
+		autoload_path = ResourceUID.get_id_path(ResourceUID.text_to_id(autoload_path))
+	if not autoload.is_empty() and autoload_path != "res://addons/godot_mcp/runtime.gd":
+		status_label.text = "Godot MCP · Autoload name conflict"
+		return
+	if autoload.is_empty():
+		add_autoload_singleton("GodotMCPRuntime", "res://addons/godot_mcp/runtime.gd")
+		added_autoload = true
+		# Persist the new helper before the first child process loads project.godot.
+		var saved: Error = ProjectSettings.save()
+		if saved != OK:
+			status_label.text = "Godot MCP · Cannot save runtime autoload"
+			return
+	var error: Error = listener.listen(0, "127.0.0.1")
+	if error != OK:
+		status_label.text = "Godot MCP · " + error_string(error)
+		return
+	DirAccess.make_dir_recursive_absolute("res://.godot-mcp")
+	FileAccess.set_unix_permissions("res://.godot-mcp", 448)
+	var file := FileAccess.open("res://.godot-mcp/endpoint.json", FileAccess.WRITE)
+	if not file:
+		listener.stop()
+		status_label.text = "Godot MCP · Cannot write endpoint"
+		return
+	var settings := EditorInterface.get_editor_settings()
+	var dap_port: int = int(settings.get_setting("network/debug_adapter/remote_port"))
+	file.store_string(JSON.stringify({"project": ProjectSettings.globalize_path("res://").trim_suffix("/"), "port": listener.get_local_port(), "token": token, "epoch": epoch, "version": Version.PRODUCT, "protocol": Version.PROTOCOL, "pid": OS.get_process_id(), "dap_port": dap_port}))
+	file.close()
+	FileAccess.set_unix_permissions("res://.godot-mcp/endpoint.json", 384)
+	_register_editor()
+	status_label.text = "Godot MCP · Ready"
+	status_label.tooltip_text = Version.PRODUCT + " · Local connections only"
+	enabled = true
+	set_process(true)
+
+func _exit_tree() -> void:
+	set_process(false)
+	for item: Dictionary in peers:
+		item.peer.close()
+	peers.clear()
+	listener.stop()
+	if enabled and FileAccess.file_exists("res://.godot-mcp/endpoint.json"):
+		var saved: Variant = JSON.parse_string(FileAccess.get_file_as_string("res://.godot-mcp/endpoint.json"))
+		if saved is Dictionary and saved.get("epoch") == epoch:
+			DirAccess.remove_absolute("res://.godot-mcp/endpoint.json")
+	if not registry_path.is_empty() and FileAccess.file_exists(registry_path):
+		var registered: Variant = JSON.parse_string(FileAccess.get_file_as_string(registry_path))
+		if registered is Dictionary and registered.get("epoch") == epoch:
+			DirAccess.remove_absolute(registry_path)
+	if debugger:
+		remove_debugger_plugin(debugger)
+	if added_autoload and ProjectSettings.get_setting("autoload/GodotMCPRuntime", "") == "*res://addons/godot_mcp/runtime.gd":
+		remove_autoload_singleton("GodotMCPRuntime")
+	if logs:
+		OS.remove_logger(logs)
+	if is_instance_valid(status_label):
+		remove_control_from_container(CONTAINER_TOOLBAR, status_label)
+		status_label.queue_free()
+	resources.clear()
+
+func _register_editor() -> void:
+	var install_file := "res://.godot-mcp/install.json"
+	if not FileAccess.file_exists(install_file):
+		return
+	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(install_file))
+	if not parsed is Dictionary or not parsed.get("home", "") is String or str(parsed.home).is_empty():
+		status_label.text = "Godot MCP · Invalid install configuration"
+		return
+	var home: String = str(parsed.home)
+	if not home.is_absolute_path():
+		status_label.text = "Godot MCP · Install home must be absolute"
+		return
+	var project: String = ProjectSettings.globalize_path("res://").trim_suffix("/")
+	var key: String = project.sha256_text()
+	var editors := home.path_join("editors")
+	if DirAccess.make_dir_recursive_absolute(editors) != OK:
+		status_label.text = "Godot MCP · Cannot create editor registry"
+		return
+	FileAccess.set_unix_permissions(editors, 448)
+	registry_path = editors.path_join(key + ".json")
+	var file := FileAccess.open(registry_path, FileAccess.WRITE)
+	if not file:
+		registry_path = ""
+		status_label.text = "Godot MCP · Cannot write editor registry"
+		return
+	file.store_string(JSON.stringify({"project": project, "epoch": epoch}))
+	file.close()
+	FileAccess.set_unix_permissions(registry_path, 384)
+
+func _process(_delta: float) -> void:
+	while listener.is_connection_available():
+		var stream := listener.take_connection()
+		if peers.size() >= 32:
+			stream.disconnect_from_host()
+			continue
+		var peer := WebSocketPeer.new()
+		peer.inbound_buffer_size = 4 * 1024 * 1024
+		peer.outbound_buffer_size = 32 * 1024 * 1024
+		peer.accept_stream(stream)
+		peers.append({"peer": peer, "time": Time.get_ticks_msec(), "authenticated": false})
+	for item: Dictionary in peers.duplicate():
+		var peer: WebSocketPeer = item.peer
+		peer.poll()
+		if peer.get_ready_state() == WebSocketPeer.STATE_CLOSED:
+			peers.erase(item)
+			continue
+		if not item.authenticated and Time.get_ticks_msec() - item.time > 5000:
+			peer.close(1008, "Authentication required")
+		while peer.get_available_packet_count() > 0:
+			var request: Variant = JSON.parse_string(peer.get_packet().get_string_from_utf8())
+			if not request is Dictionary:
+				peer.close(1002, "Expected JSON object")
+				break
+			if request.get("token", "") != token:
+				_respond(peer, request.get("id"), fail("UNAUTHORIZED", "Invalid project token."))
+				peer.close(1008, "Unauthorized")
+				break
+			item.authenticated = true
+			if busy:
+				_respond(peer, request.get("id"), fail("EDITOR_BUSY", "Another request is still running."))
+			elif not request.get("params", {}) is Dictionary:
+				_respond(peer, request.get("id"), fail("INVALID_ARGUMENT", "params must be an object."))
+			elif not paths_safe(request.get("params", {})):
+				_respond(peer, request.get("id"), fail("INVALID_PATH", "Project path contains traversal or a symlink."))
+			else:
+				_execute(peer, request)
+
+func _respond(peer: WebSocketPeer, id: Variant, result: Dictionary) -> void:
+	if peer.get_ready_state() != WebSocketPeer.STATE_OPEN:
+		return
+	var response: Dictionary = {"id": id}
+	if result.has("error"):
+		response.error = result.error
+	else:
+		response.result = result
+	var payload: String = JSON.stringify(response)
+	# Godot leaves some control bytes (notably ANSI ESC from logs) literal.
+	for code: int in range(32):
+		payload = payload.replace(String.chr(code), "\\u%04x" % code)
+	peer.send_text(payload)
+
+func _execute(peer: WebSocketPeer, request: Dictionary) -> void:
+	busy = true
+	status_label.text = "Godot MCP · " + str(request.get("method", "request"))
+	var result: Dictionary = await dispatch(str(request.get("method", "")), request.get("params", {}))
+	if result.is_empty(): result = fail("INTEGRATION_ERROR", "The Godot handler did not complete. Read get_diagnostics before retrying; an edit may have partially applied.")
+	_respond(peer, request.get("id"), result)
+	busy = false
+	if is_instance_valid(status_label):
+		status_label.text = "Godot MCP · Ready"
+
+func dispatch(method: String, p: Dictionary) -> Dictionary:
+	match method:
+		"get_context": return context(p)
+		"undo_edit": return undo_edit(p)
+		"_debug_state": return debugger.state()
+		"_breakpoints": return documents.breakpoints(p)
+	for module: RefCounted in modules:
+		if module.handles(method):
+			return await module.dispatch(method, p)
+	return fail("UNKNOWN_TOOL", "Unknown tool: " + method)
+
+func fail(code: String, message: String, details: Dictionary = {}) -> Dictionary:
+	return {"error": {"code": code, "message": message, "details": details}}
+
+func context(p: Dictionary) -> Dictionary:
+	var selected: Array = []
+	for node: Node in EditorInterface.get_selection().get_selected_nodes():
+		selected.append(node_ref(node))
+	var root := EditorInterface.get_edited_scene_root()
+	var data: Dictionary = {"project": ProjectSettings.globalize_path("res://"), "engine": Engine.get_version_info(), "version": Version.PRODUCT, "protocol": Version.PROTOCOL, "editor_epoch": epoch, "active_scene": root.scene_file_path if root else null, "selected_nodes": selected, "unsaved_scenes": EditorInterface.get_unsaved_scenes(), "unsaved_scripts": EditorInterface.get_script_editor().get_unsaved_files(), "unsaved_resources": dirty_resources(), "running": EditorInterface.is_playing_scene(), "run_id": runtime.run_id, "runtime_connected": runtime.ready, "debugger": debugger.state()}
+	var scope: String = p.get("scope", "all")
+	if scope == "project":
+		return {"project": data.project, "engine": data.engine, "version": data.version, "protocol": data.protocol}
+	if scope == "runtime":
+		return {"running": data.running, "run_id": data.run_id, "runtime_connected": data.runtime_connected, "debugger": data.debugger}
+	return data
+
+func paths_safe(value: Variant) -> bool:
+	if value is Dictionary:
+		for child: Variant in value.values():
+			if not paths_safe(child): return false
+	elif value is Array:
+		for child: Variant in value:
+			if not paths_safe(child): return false
+	elif value is String and value.begins_with("res://"):
+		var relative: String = value.trim_prefix("res://")
+		if relative.contains("\\") or ".." in relative.split("/") or relative.begins_with("/"): return false
+		var directory: String = "res://"
+		for part: String in relative.split("/"):
+			var access := DirAccess.open(directory)
+			if access and access.is_link(part): return false
+			directory = directory.path_join(part)
+	return true
+
+func scene_root(uri: String = "") -> Node:
+	if uri.is_empty():
+		return EditorInterface.get_edited_scene_root()
+	for root: Node in EditorInterface.get_open_scene_roots():
+		if root.scene_file_path == uri:
+			return root
+	if uri.begins_with("res://") and FileAccess.file_exists(uri) and EditorInterface.get_resource_filesystem().get_file_type(uri) == "PackedScene":
+		EditorInterface.open_scene_from_path(uri)
+		for root: Node in EditorInterface.get_open_scene_roots():
+			if root.scene_file_path == uri:
+				return root
+	return null
+
+func resolve_node(ref: Dictionary) -> Node:
+	var root := scene_root(str(ref.get("scene", "")))
+	var path: String = str(ref.get("path", "."))
+	if not root or path.begins_with("/") or ".." in path.split("/") or path.contains(":"):
+		return null
+	return root.get_node_or_null(NodePath(path))
+
+func node_ref(node: Node) -> Dictionary:
+	for root: Node in EditorInterface.get_open_scene_roots():
+		if node == root or root.is_ancestor_of(node):
+			return {"scene": root.scene_file_path, "path": str(root.get_path_to(node))}
+	return {"scene": "", "path": str(node.name)}
+
+func register_resource(resource: Resource) -> String:
+	var uri: String = resource.resource_path
+	if uri.is_empty() or not uri.begins_with("res://"):
+		uri = "godot://resources/" + epoch + "/" + str(resource.get_instance_id())
+	resources[uri] = resource
+	return uri
+
+func resource_uri(uri: String) -> Resource:
+	if resources.has(uri):
+		return resources[uri]
+	if uri.begins_with("res://") and paths_safe(uri) and ResourceLoader.exists(uri):
+		var resource: Resource = load(uri)
+		register_resource(resource)
+		return resource
+	return null
+
+func resolve_resource(target: Dictionary) -> Resource:
+	if target.has("uri"):
+		return resource_uri(str(target.uri))
+	var node := resolve_node(target.get("node", {}))
+	if not node or property_info(node, str(target.get("property", ""))).is_empty():
+		return null
+	return node.get(str(target.property)) as Resource
+
+func encode(value: Variant) -> Variant:
+	return Codec.encode(value, register_resource)
+
+func decode(value: Variant) -> Variant:
+	return Codec.decode(value, resource_uri)
+
+func dirty_resources() -> Array:
+	var values: Array = []
+	for uri: String in resources:
+		if EditorInterface.is_object_edited(resources[uri]):
+			values.append(uri)
+	return values
+
+func property_info(object: Object, property: String) -> Dictionary:
+	for info: Dictionary in object.get_property_list():
+		if str(info.name) == property:
+			return info
+	return {}
+
+func property_error(object: Object, values: Dictionary) -> String:
+	for key: String in values:
+		var info: Dictionary = property_info(object, key)
+		if info.is_empty(): return "Unknown property: " + key
+		if int(info.usage) & PROPERTY_USAGE_READ_ONLY: return "Read-only property: " + key
+		var value: Variant = decode(values[key])
+		if values[key] is Dictionary and values[key].get("$type") == "Resource" and value == null:
+			return "Resource reference does not exist: " + str(values[key].get("uri"))
+		var expected: int = int(info.type)
+		if value == null:
+			if expected not in [TYPE_NIL, TYPE_OBJECT]: return "Null is not valid for " + key
+		elif expected != TYPE_NIL and typeof(value) != expected:
+			if not ((expected == TYPE_FLOAT and value is int) or (expected == TYPE_INT and value is float and float(int(value)) == value) or (expected == TYPE_STRING_NAME and value is String)):
+				return "Wrong type for " + key + ": expected " + type_string(expected)
+		if expected == TYPE_OBJECT and value != null and not str(info.class_name).is_empty() and not value.is_class(info.class_name):
+			return key + " requires " + str(info.class_name)
+	return ""
+
+func property_changes(object: Object, values: Dictionary) -> Array[Dictionary]:
+	var changes: Array[Dictionary] = []
+	for key: String in values:
+		var value: Variant = decode(values[key])
+		var info: Dictionary = property_info(object, key)
+		if int(info.get("type", TYPE_NIL)) == TYPE_INT and value is float: value = int(value)
+		if int(info.get("type", TYPE_NIL)) == TYPE_STRING_NAME and value is String: value = StringName(value)
+		changes.append({"object": object, "property": key, "before": object.get(key), "after": value})
+	return changes
+
+func begin_edit(label: String, context_object: Object) -> void:
+	get_undo_redo().create_action("MCP: " + label, UndoRedo.MERGE_DISABLE, context_object)
+
+func add_changes(changes: Array) -> void:
+	for change: Dictionary in changes:
+		get_undo_redo().add_do_property(change.object, change.property, change.after)
+		get_undo_redo().add_undo_property(change.object, change.property, change.before)
+		if change.object is Resource:
+			get_undo_redo().add_do_method(change.object, "emit_changed")
+			get_undo_redo().add_undo_method(change.object, "emit_changed")
+		get_undo_redo().add_do_method(EditorInterface, "set_object_edited", change.object, true)
+		get_undo_redo().add_undo_method(EditorInterface, "set_object_edited", change.object, true)
+
+func finish_edit(context_object: Object, label: String, guards: Array = [], execute: bool = true) -> Dictionary:
+	get_undo_redo().commit_action(execute)
+	var history_id: int = get_undo_redo().get_object_history_id(context_object)
+	var history := get_undo_redo().get_history_undo_redo(history_id)
+	var edit: Dictionary = {"edit_id": "edit-" + epoch + "-" + str(Time.get_ticks_usec()), "history_id": history_id, "history_version": history.get_version(), "label": label, "guards": guards}
+	edits.append(edit)
+	if edits.size() > 100: edits.pop_front()
+	return {"edit_id": edit.edit_id, "saved": false}
+
+func commit_changes(changes: Array, context_object: Object, label: String) -> Dictionary:
+	if changes.is_empty(): return {"changed": false, "saved": false}
+	begin_edit(label, context_object)
+	add_changes(changes)
+	return finish_edit(context_object, label)
+
+func undo_edit(p: Dictionary) -> Dictionary:
+	if edits.is_empty(): return fail("NO_EDIT", "No recorded MCP edit to undo.")
+	var edit: Dictionary = edits.back()
+	if edit.edit_id != p.get("edit_id"): return fail("STALE_EDIT", "Only the most recent MCP edit is eligible for undo.")
+	var history := get_undo_redo().get_history_undo_redo(edit.history_id)
+	if history.get_version() != edit.history_version:
+		return fail("EDIT_CONFLICT", "Editor history changed after this MCP edit.")
+	for guard: Dictionary in edit.guards:
+		if not guard.check.call(): return fail("EDIT_CONFLICT", "A document changed after this MCP edit.")
+	history.undo()
+	edits.pop_back()
+	return {"undone": edit.edit_id, "label": edit.label, "saved": false}
