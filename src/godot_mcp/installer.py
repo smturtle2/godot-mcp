@@ -23,6 +23,8 @@ from .version import ENGINE_VERSION, PRODUCT_VERSION
 
 
 def default_home() -> Path:
+    if os.environ.get("GODOT_MCP_HOME"):
+        return Path(os.environ["GODOT_MCP_HOME"]).expanduser()
     if sys.platform == 'win32':
         return Path(os.environ.get('LOCALAPPDATA', Path.home() / 'AppData/Local')) / 'godot-mcp'
     return Path(os.environ.get('XDG_DATA_HOME', Path.home() / '.local/share')) / 'godot-mcp'
@@ -215,11 +217,44 @@ def initialize_project(project: Path, home: Path) -> dict:
     return result
 
 
+def launcher_at(home: Path) -> Path:
+    return home / 'bin' / ('godot-mcp.exe' if os.name == 'nt' else 'godot-mcp')
+
+
+def install_launcher(executable: Path, home: Path) -> Path:
+    """Keep one launcher runtime; active.json chooses the server after updates."""
+    target = launcher_at(home)
+    config = target.parent / 'godot-mcp-launcher.json'
+    if target.is_symlink() or config.is_symlink():
+        raise ValueError('Refusing to replace a symlinked launcher or configuration.')
+    descriptor = {'schema_version': 1, 'home': str(home.resolve())}
+    if target.exists():
+        if not config.is_file() or json.loads(config.read_text()) != descriptor:
+            raise ValueError(f'An unrelated command already exists at {target}.')
+        return target
+    source = executable.with_name('godot-mcp-launcher.exe' if os.name == 'nt' else 'godot-mcp-launcher')
+    if not source.is_file():
+        raise ValueError('Prepared environment has no launcher entry point.')
+    target.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write(config, json.dumps(descriptor))
+    fd, temporary = tempfile.mkstemp(prefix='.launcher-', dir=target.parent)
+    os.close(fd)
+    try:
+        shutil.copy2(source, temporary)
+        os.chmod(temporary, 0o755)
+        os.replace(temporary, target)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+    return target
+
+
 def install_global(executable: Path, home: Path, project: Path | None = None) -> dict:
     """Activate a tested environment, refresh linked plugins atomically."""
     home.mkdir(parents=True, exist_ok=True)
     os.chmod(home, 0o700)
     active_file = home / 'active.json'
+    if any(path.is_symlink() for path in (launcher_at(home), home / 'bin/godot-mcp-launcher.json')):
+        raise ValueError('Refusing to replace a symlinked launcher or configuration.')
     projects = {Path(json.loads(p.read_text())['project']) for p in (home / 'projects').glob('*.json')}
     projects = {p for p in projects if (p / 'project.godot').is_file()}
     if project:
@@ -228,7 +263,7 @@ def install_global(executable: Path, home: Path, project: Path | None = None) ->
     backup.mkdir(parents=True)
     os.chmod(backup, 0o700)
     snapshots = []
-    for index, path in enumerate([active_file]):
+    for index, path in enumerate([active_file, launcher_at(home), home / 'bin/godot-mcp-launcher.json']):
         destination = backup / f'file-{index}'
         if path.exists():
             shutil.copy2(path, destination)
@@ -242,6 +277,7 @@ def install_global(executable: Path, home: Path, project: Path | None = None) ->
             child = install_project(linked, executable, home)
             record['children'].append(child['backup'])
             journal.write_text(json.dumps(record, indent=2))
+        install_launcher(executable, home)
         _atomic_write(active_file, json.dumps({'version': PRODUCT_VERSION, 'executable': str(executable)}, indent=2))
         record.update(status='installed')
         journal.write_text(json.dumps(record, indent=2))
@@ -259,7 +295,9 @@ def rollback(transaction: Path) -> dict:
             rollback(Path(child))
         for item in reversed(record['snapshots']):
             # Old journals may reference external app settings. Those are not ours to restore.
-            if Path(item['path']).resolve() == (backup.parent.parent / 'active.json').resolve():
+            owned_home = backup.parent.parent
+            owned_paths = {owned_home / 'active.json', launcher_at(owned_home), owned_home / 'bin/godot-mcp-launcher.json'}
+            if Path(item['path']).absolute() in {path.absolute() for path in owned_paths}:
                 _restore_file(Path(item['path']), Path(item['backup']) if item['backup'] else None)
         record['status'] = 'rolled_back'
         (backup / 'transaction.json').write_text(json.dumps(record, indent=2))
@@ -286,6 +324,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--source', type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument('--home', type=Path, default=default_home())
     parser.add_argument('--yes', action='store_true', help='accept explicit/default values without prompts')
+    parser.add_argument('--no-modify-path', action='store_true', help='install the stable command without changing shell PATH')
     parser.add_argument('--repair', action='store_true', help='prepare a fresh environment even if this version is installed')
     parser.add_argument('--plugin-only', action='store_true', help='reuse this installed executable; no environment preparation')
     parser.add_argument('--rollback', type=Path, help='restore a selected installation transaction snapshot')
@@ -340,9 +379,14 @@ def main(argv: list[str] | None = None) -> int:
         else:
             record = install_global(executable, args.home, args.project)
             print(f'Installed {PRODUCT_VERSION} for this user.')
-            print(f'Stdio command: "{executable}" connect --home "{args.home}"')
+            command = launcher_at(args.home)
+            executable = command
+            print(f'Stdio command: "{command}" connect')
+            if not args.no_modify_path:
+                from .command_path import register_path
+                print(register_path(command.parent))
             print('Connection registration and process launch belong to your MCP client.')
-            print(f'Link another project: "{executable}" install --plugin-only --yes --home "{args.home}" --project PATH')
+            print('Link another project: godot-mcp init [PROJECT]')
             print(f'Rollback: "{executable}" install --rollback "{record["backup"]}"')
         if args.project:
             print(f'Open {args.project} in Godot {ENGINE_VERSION}; then run "{executable}" check --project "{args.project}".')

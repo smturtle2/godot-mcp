@@ -23,6 +23,7 @@ Issues = "https://github.com/smturtle2/godot-mcp/issues"
 
 [project.scripts]
 godot-mcp = "godot_mcp.cli:main"
+godot-mcp-launcher = "godot_mcp.launcher:main"
 
 [dependency-groups]
 dev = ["pytest>=8,<10", "pytest-asyncio>=1,<2", "ruff>=0.12,<1", "build>=1.2,<2"]

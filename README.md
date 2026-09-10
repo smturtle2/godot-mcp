@@ -8,6 +8,10 @@
 Work with scenes, scripts, and a running game from your AI assistant.</p>
 
 <p align="center">
+  <a href="README.ko.md">한국어</a> · <a href="README.md">English</a>
+</p>
+
+<p align="center">
   <a href="https://github.com/smturtle2/godot-mcp/releases"><img src="https://img.shields.io/badge/Godot-4.7.2-478cbf?logo=godotengine&logoColor=white" alt="Godot 4.7.2"></a>
   <a href="https://github.com/smturtle2/godot-mcp/releases"><img src="https://img.shields.io/badge/MCP-2026--07--28-5b5bd6" alt="MCP 2026-07-28"></a>
   <a href="https://www.python.org/downloads/release/python-3130/"><img src="https://img.shields.io/badge/Python-3.13-3776ab?logo=python&logoColor=white" alt="Python 3.13"></a>
@@ -16,9 +20,9 @@ Work with scenes, scripts, and a running game from your AI assistant.</p>
 
 ## Get started
 
-Requires a supported Godot runtime (current release: **4.7.2**) and an MCP client that supports local stdio servers. Linux x86_64 is tested; native testing on macOS, Windows, and Linux ARM64 is pending.
+Requires Godot **4.7.2** and an MCP client that supports local stdio servers. Linux x86_64 is tested; native testing on macOS, Windows, and Linux ARM64 is pending.
 
-### 1. Install the latest release
+### Install the latest release
 
 Linux/macOS:
 
@@ -32,36 +36,35 @@ Windows PowerShell:
 irm https://raw.githubusercontent.com/smturtle2/godot-mcp/main/install.ps1 | iex
 ```
 
-The public bootstrap fetches the latest stable release from GitHub Releases. It does not detect or ask for a Godot executable. The installer prepares the server environment and prints a generic stdio command; client registration and launch remain your MCP client’s responsibility.
+The public installer fetches the latest stable release. It does not detect or ask for a Godot executable or engine version. It installs a user-local stable `godot-mcp` command and adds its directory to your user shell `PATH`; open a new terminal before using that command.
 
-### 2. Ask your AI to install the project plugin
+The installer prints a fixed absolute stdio command for MCP client setup. GUI MCP clients should use that printed command because their `PATH` may differ from your shell. The client launches the server; the installer does not write client configuration.
 
-Open your AI app with the registered stdio server and ask it to install the Godot plugin for an absolute project directory. The `install_plugin` setup tool uses the server’s configured `--home` and the same transactional installer used by the CLI. It can run before any Godot editor connection exists.
+### Install a project plugin with your AI
 
-Close the project in Godot before installation. The tool installs and enables the plugin; then open the project in Godot. Ask your AI:
+Register the printed stdio command with your MCP client, then ask your AI assistant to install the plugin for an absolute project directory. The `install_plugin` setup tool uses the server’s configured installation home and the same transactional installer as the CLI. It works before Godot is open.
+
+Close the project in Godot before installing its plugin. Installation enables the plugin automatically; then open the project in Godot. Then ask your AI:
 
 > Check the connected Godot project and describe the current scene.
 
-The server discovers open linked projects. If several are open, tell the assistant which absolute project path to use; the selection is remembered for that MCP connection.
+If several projects are open, provide the assistant with the absolute project path to select.
 
 ### CLI alternative
 
-Use `init` when you want to link the current folder (or the project path you provide) from a terminal:
-
 ```bash
-/path/to/installed/godot-mcp init /path/to/project --home /path/to/godot-mcp-home
+godot-mcp init /path/to/project
 ```
 
-With no project argument, `init` uses the current folder. Use the executable and installation home printed by the installer. A source checkout can use the explicit developer workflow:
+With no project argument, `godot-mcp init` uses the current folder. Check a running editor with:
 
 ```bash
-uv sync --frozen
-uv run godot-mcp install --source "$PWD" --home /path/to/godot-mcp-home
+godot-mcp check --project /path/to/project
 ```
 
-After updates, the installed executable path may change. Update the MCP client’s stdio command to the newly printed path; there is no stable launcher in this release.
+The command and MCP executable path stay the same after updates. Close linked Godot projects before re-running the installer, then reconnect MCP to start the new server.
 
-See [setup and troubleshooting](docs/installation.md) for connection checks, updates, and rollback.
+See [setup and troubleshooting](docs/installation.md) for linking, discovery, updates, and rollback.
 
 ## Tools
 

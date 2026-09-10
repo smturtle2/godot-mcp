@@ -83,16 +83,20 @@ def verify(source: Path, godot: str, work_dir: Path | None) -> dict:
         clean_env = dict(os.environ)
         clean_env.pop("PYTHONPATH", None)
         installer = [sys.executable, "-m", "godot_mcp.cli", "install", "--yes", "--source", str(source),
-                     "--home", str(home)]
+                     "--home", str(home), "--no-modify-path"]
         first = run(installer, cwd=source, env=installer_env, timeout=90)
         executable = installed_executable(home)
         active = json.loads((home / "active.json").read_text())
         if Path(active["executable"]).resolve() != executable.resolve() or not executable.is_file():
             raise RuntimeError("Active installation does not point to the installed executable")
+        stable = home / "bin" / ("godot-mcp.exe" if os.name == "nt" else "godot-mcp")
+        stable_bytes = stable.read_bytes()
+        command_env = dict(clean_env, PATH=str(stable.parent) + os.pathsep + clean_env.get("PATH", ""))
+        assert run(["godot-mcp", "version"], cwd=project, env=command_env).returncode == 0
         version = run([str(executable), "version"], cwd=project, env=clean_env)
-        global_smoke = asyncio.run(mcp_smoke(executable, project, clean_env, home, edit=False))
-        link = [str(executable), "init", "--home", str(home)]
-        run(link, cwd=project, env=clean_env, timeout=30)
+        global_smoke = asyncio.run(mcp_smoke(stable, project, clean_env, home, edit=False))
+        link = ["godot-mcp", "init"]
+        run(link, cwd=project, env=command_env, timeout=30)
         check_before = subprocess.run([str(executable), "check", "--project", str(project)], cwd=project, env=clean_env,
                                       capture_output=True, text=True, timeout=10)
         with socket.socket() as dap_socket, socket.socket() as debug_socket:
@@ -115,7 +119,7 @@ def verify(source: Path, godot: str, work_dir: Path | None) -> dict:
             if not endpoint.exists():
                 raise RuntimeError("Timed out waiting for Godot MCP endpoint")
             assert check_before.returncode != 0
-            smoke = asyncio.run(mcp_smoke(executable, project, clean_env, home))
+            smoke = asyncio.run(mcp_smoke(stable, project, clean_env, home))
             check_after = run([str(executable), "check", "--project", str(project)], cwd=project, env=clean_env, timeout=15)
         finally:
             editor.terminate()
@@ -134,6 +138,10 @@ def verify(source: Path, godot: str, work_dir: Path | None) -> dict:
         stale_endpoint_update_passed = True
         repair = run(installer + ["--repair"], cwd=source, env=installer_env, timeout=90)
         repaired_executable = installed_executable(home)
+        assert stable.read_bytes() == stable_bytes
+        assert run(["godot-mcp", "version"], cwd=project, env=command_env).returncode == 0
+        init_after_repair = run(["godot-mcp", "init"], cwd=project, env=command_env)
+        assert json.loads(init_after_repair.stdout)["executable"] == str(repaired_executable)
         transactions = list((home / "transactions").iterdir())
         if repaired_executable == second_executable:
             raise RuntimeError("Repair did not create a new executable environment")
@@ -141,6 +149,7 @@ def verify(source: Path, godot: str, work_dir: Path | None) -> dict:
             raise RuntimeError("Repair did not retain an installation transaction backup")
         return {"ok": True, "project": str(project), "install_home": str(home), "executable": str(executable),
                 "second_executable": str(second_executable), "reused_on_reinstall": executable == second_executable,
+                "stable_command": str(stable), "stable_command_repair_passed": True,
                 "repaired_executable": str(repaired_executable), "repair_created_new": repaired_executable != second_executable,
                 "stale_endpoint_update_passed": stale_endpoint_update_passed,
                 "transaction_count": len(transactions),

@@ -19,10 +19,12 @@ irm https://raw.githubusercontent.com/smturtle2/godot-mcp/main/install.ps1 | iex
 The installer owns the versioned server environment, project plugin/linking records, active executable, and project index. It prints a generic command such as:
 
 ```text
-/path/to/installed/godot-mcp connect --home /path/to/godot-mcp-home
+/path/to/godot-mcp-home/bin/godot-mcp connect
 ```
 
-Register that command with your MCP client using its own setup flow. The executable path may change after an update, so replace the client command with the newly printed path. This release has no stable launcher.
+Register that fixed command with your MCP client using its own setup flow. The launcher selects the active server version on every start, so updates keep the same registered path. Reconnect MCP after an update.
+
+The installer creates a user command inside its installation home and adds its `bin` directory to the user PATH. Open a new terminal to run `godot-mcp`. For managed installations, pass `--no-modify-path`; the printed absolute command works immediately without PATH changes.
 
 ## Install the project plugin with your AI
 
@@ -35,11 +37,11 @@ Close the project in Godot before installing its plugin. The installer enables t
 `init` performs the same project linking flow from a terminal. Its default project is the current folder:
 
 ```bash
-/path/to/installed/godot-mcp init /path/to/project --home /path/to/godot-mcp-home
-/path/to/installed/godot-mcp init --home /path/to/godot-mcp-home
+godot-mcp init /path/to/project --home /path/to/godot-mcp-home
+godot-mcp init --home /path/to/godot-mcp-home
 ```
 
-Use the installation home printed by the installer. An explicit source checkout remains available for developers:
+The stable command remembers its installation home; `--home` is normally unnecessary. An explicit source checkout remains available for developers:
 
 ```bash
 uv sync --frozen
@@ -49,7 +51,7 @@ uv run godot-mcp install --source /path/to/godot-mcp --home /path/to/godot-mcp-h
 The older project-bound form remains useful when a client already supplies the project:
 
 ```bash
-/path/to/installed/godot-mcp serve --project /path/to/project
+godot-mcp serve --project /path/to/project
 ```
 
 ## Connect and select
@@ -68,7 +70,7 @@ The setup tool is the exception: `install_plugin` takes an absolute project dire
 Ask the AI to call `get_context`, or use the compatibility check while Godot is open:
 
 ```bash
-/path/to/installed/godot-mcp check --project /path/to/project
+godot-mcp check --project /path/to/project
 ```
 
 A successful installation means the server environment and project plugin were prepared. Connection compatibility is checked against the supported Godot runtime when the editor connects; the current release targets Godot 4.7.2.
@@ -79,7 +81,7 @@ Close linked Godot projects before updating. Re-run the installer with the same 
 
 | Symptom | Action |
 | --- | --- |
-| The client cannot start the server | Check the printed executable path and `connect --home` arguments; update them after a server update. |
+| The client cannot start the server | Check the printed executable path and `connect --home` arguments; use the fixed absolute command for GUI clients. |
 | `NO_OPEN_PROJECT` | Open a linked project in Godot and enable the plugin. |
 | `PROJECT_REQUIRED` | Ask the AI to select an absolute project path from `get_context`. |
 | `PROJECT_CLOSED` | Reopen the project or select another open project. |

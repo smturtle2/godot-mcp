@@ -1,3 +1,10 @@
+# v4.7.2_5
+
+- Install a stable user command and register its directory on the user's shell PATH. The command follows the active installation, so server updates keep the same CLI and MCP executable path.
+- Keep MCP client configuration and process ownership with the client. Print the stable absolute stdio command for GUI clients.
+- Add `--no-modify-path` for isolated or managed installations; command creation and rollback remain inside the installation home.
+- Rewrite the getting-started instructions around `godot-mcp init` and add the Korean `README.ko.md`.
+
 # v4.7.2_4
 
 - Add `godot-mcp init [PROJECT]` and the `install_plugin` MCP tool to install and enable a project plugin before an editor connection exists. The catalog now contains 43 tools.

@@ -6,6 +6,13 @@ import pytest
 from godot_mcp import installer
 
 
+def fake_executable(tmp_path: Path, name: str = "server") -> Path:
+    executable = tmp_path / name
+    executable.write_text("fake")
+    executable.with_name("godot-mcp-launcher").write_text("launcher")
+    return executable
+
+
 def setup_project(tmp_path: Path) -> Path:
     project = tmp_path / "project"
     (project / "addons/godot_mcp").mkdir(parents=True)
@@ -16,8 +23,7 @@ def setup_project(tmp_path: Path) -> Path:
 
 
 def test_global_install_activates_server_without_project(tmp_path):
-    home, executable = tmp_path / "home", tmp_path / "server"
-    executable.write_text("fake")
+    home, executable = tmp_path / "home", fake_executable(tmp_path)
     record = installer.install_global(executable, home)
     assert record["status"] == "installed"
     assert json.loads((home / "active.json").read_text())["executable"] == str(executable)
@@ -25,9 +31,7 @@ def test_global_install_activates_server_without_project(tmp_path):
 
 def test_global_update_refreshes_existing_link_without_project_argument(tmp_path):
     project, home = setup_project(tmp_path), tmp_path / "home"
-    first_executable, second_executable = tmp_path / "server1", tmp_path / "server2"
-    first_executable.write_text("one")
-    second_executable.write_text("two")
+    first_executable, second_executable = fake_executable(tmp_path, "server1"), fake_executable(tmp_path, "server2")
     installer.install_global(first_executable, home, project)
     old_link = json.loads((project / ".godot-mcp/install.json").read_text())
     record = installer.install_global(second_executable, home)
@@ -39,8 +43,7 @@ def test_global_update_refreshes_existing_link_without_project_argument(tmp_path
 
 def test_global_rollback_restores_active_config_plugin_link_and_index(tmp_path):
     project, home = setup_project(tmp_path), tmp_path / "home"
-    executable = tmp_path / "server"
-    executable.write_text("server")
+    executable = fake_executable(tmp_path)
     old_plugin = (project / "addons/godot_mcp/old.txt").read_bytes()
     record = installer.install_global(executable, home, project)
     installer.rollback(Path(record["backup"]))
@@ -52,8 +55,7 @@ def test_global_rollback_restores_active_config_plugin_link_and_index(tmp_path):
 
 def test_global_activation_failure_rolls_back_all_children_and_files(tmp_path, monkeypatch):
     project, home = setup_project(tmp_path), tmp_path / "home"
-    executable = tmp_path / "server"
-    executable.write_text("server")
+    executable = fake_executable(tmp_path)
 
     original_write = installer._atomic_write
 
@@ -74,7 +76,7 @@ def test_legacy_client_registry_is_ignored_without_mutation(tmp_path):
     home.mkdir()
     legacy = home / "clients.json"
     legacy.write_text("not json")
-    installer.install_global(tmp_path / "server", home)
+    installer.install_global(fake_executable(tmp_path), home)
     assert legacy.read_text() == "not json"
 
 
@@ -93,8 +95,8 @@ def test_updates_and_legacy_rollbacks_never_access_external_settings(tmp_path, m
         return original_open(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, 'open', guarded_open)
-    first = installer.install_global(tmp_path / 'server1', home, project)
-    second = installer.install_global(tmp_path / 'server2', home)
+    first = installer.install_global(fake_executable(tmp_path, 'server1'), home, project)
+    second = installer.install_global(fake_executable(tmp_path, 'server2'), home)
     # Old journals contain app snapshots and per-project registration fields.
     backup = Path(second['backup'])
     journal = json.loads((backup / 'transaction.json').read_text())

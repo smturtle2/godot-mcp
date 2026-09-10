@@ -15,7 +15,7 @@ MCP client ──stdio──> Python server
 
 `installer.py` owns the versioned server environment, project addon/link records, active executable, and project index. `cli.py` exposes `connect`, `init`, `install`, `serve`, `check`, and `version`. `discovery.py` filters registered editors by project, endpoint, product/version compatibility, epoch, and live PID. `bridge.py` validates project values and exchanges bounded requests with the addon. `debugger.py` and `dap.py` handle editor debugger operations.
 
-Client registration and process launch are outside the installer. The client starts the generic `godot-mcp connect --home HOME` stdio command. Godot is opened separately and publishes its endpoint when the project plugin is enabled. There is no stable launcher; an environment update may require the client’s registered executable path to be replaced.
+Client registration and process launch are outside the installer. The client starts the generic `godot-mcp connect --home HOME` stdio command. Godot is opened separately and publishes its endpoint when the project plugin is enabled. A stable command in the installation home reads `active.json` and starts the active environment. The launcher runtime is retained in its original environment; updates and rollback change the active server without changing the client’s command. `command_path.py` adds the command directory to the user shell PATH.
 
 ## Editor authority and request flow
 
