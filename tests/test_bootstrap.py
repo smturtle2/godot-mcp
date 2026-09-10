@@ -1,15 +1,11 @@
 import hashlib
-import importlib.util
 import io
 import json
 import zipfile
-from pathlib import Path
 
 import pytest
 
-SPEC = importlib.util.spec_from_file_location("bootstrap", Path(__file__).parents[1] / "scripts/bootstrap.py")
-bootstrap = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(bootstrap)
+from godot_mcp import bootstrap
 
 
 def archive(*entries):

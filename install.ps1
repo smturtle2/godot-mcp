@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 
-$bootstrapUrl = 'https://raw.githubusercontent.com/smturtle2/godot-mcp/main/scripts/bootstrap.py'
+$bootstrapUrl = 'https://raw.githubusercontent.com/smturtle2/godot-mcp/main/src/godot_mcp/bootstrap.py'
 $uvInstallerUrl = 'https://astral.sh/uv/install.ps1'
 $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ('godot-mcp-install-' + [Guid]::NewGuid().ToString('N'))
 $bootstrap = Join-Path $tempDir 'bootstrap.py'

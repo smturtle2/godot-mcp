@@ -1,3 +1,10 @@
+# v4.7.2_1
+
+- Automatically locate and validate Godot; prompt for its executable only when discovery fails. `--godot` remains an override; `--yes` never waits for input.
+- Share standalone bootstrap detection with the installer to keep release/source installs consistent.
+- Isolate installer subprocess environments and explicitly copy dependencies, preventing inherited-environment and cross-filesystem hardlink warnings without suppressing diagnostics.
+- Keep the existing HTTPS bootstrap path compatible. No tool schema changes.
+
 # v4.7.2_0
 
 Initial Godot 4.7.2 integration with 42 MCP tools.

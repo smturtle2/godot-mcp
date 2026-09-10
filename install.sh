@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-bootstrap_url='https://raw.githubusercontent.com/smturtle2/godot-mcp/main/scripts/bootstrap.py'
+bootstrap_url='https://raw.githubusercontent.com/smturtle2/godot-mcp/main/src/godot_mcp/bootstrap.py'
 uv_installer_url='https://astral.sh/uv/install.sh'
 temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/godot-mcp-install.XXXXXX")
 cleanup() { rm -rf "$temp_dir"; }

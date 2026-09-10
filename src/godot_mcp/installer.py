@@ -16,6 +16,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from .bootstrap import installation_environment, probe_godot, resolve_godot
 from .client_config import _atomic_write, register_client, register_global_client
 from .version import ENGINE_VERSION, PRODUCT_VERSION
 
@@ -72,12 +73,7 @@ def enable_plugin(source: str) -> str:
 
 
 def check_godot(command: str) -> str:
-    result = subprocess.run([command, '--version'], capture_output=True, text=True, timeout=15, check=True)
-    match = re.search(r'(\d+\.\d+\.\d+)', result.stdout)
-    actual = match.group(1) if match else result.stdout.strip()
-    if actual != ENGINE_VERSION:
-        raise ValueError(f'{PRODUCT_VERSION} requires Godot {ENGINE_VERSION}; detected {actual}. No project changes made.')
-    return actual
+    return probe_godot(command, ENGINE_VERSION)[1]
 
 
 def prepare_environment(source: Path, home: Path, repair: bool = False) -> tuple[Path, Path]:
@@ -106,9 +102,8 @@ def prepare_environment(source: Path, home: Path, repair: bool = False) -> tuple
     try:
         shutil.copytree(source, package, ignore=shutil.ignore_patterns('.git', '.venv', '__pycache__', '.pytest_cache', '.ruff_cache', 'dist', '.godot', '.godot-mcp'))
         environment = version_dir / 'environment'
-        env = dict(os.environ, UV_PROJECT_ENVIRONMENT=str(environment))
-        env.pop('VIRTUAL_ENV', None)
-        subprocess.run([uv, 'sync', '--project', str(package), '--frozen', '--no-dev', '--no-editable', '--python', '3.13'], env=env, check=True)
+        env = installation_environment(environment)
+        subprocess.run([uv, 'sync', '--project', str(package), '--frozen', '--no-dev', '--no-editable', '--python', '3.13', '--link-mode', 'copy'], env=env, check=True)
         executable = executable_at(environment)
         result = subprocess.run([str(executable), 'version'], capture_output=True, text=True, check=True)
         if PRODUCT_VERSION not in result.stdout:
@@ -284,7 +279,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--project', type=Path)
     parser.add_argument('--source', type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument('--home', type=Path, default=default_home())
-    parser.add_argument('--godot', default=shutil.which('godot') or shutil.which('godot4') or 'godot')
+    parser.add_argument('--godot')
     parser.add_argument('--client-config', type=Path)
     parser.add_argument('--client-format', choices=['json', 'codex', 'vscode'], default='json')
     parser.add_argument('--name', default='godot-mcp')
@@ -297,6 +292,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.rollback:
             print(json.dumps(rollback(args.rollback), indent=2))
             return 0
+        args.godot, _ = resolve_godot(args.godot, expected=ENGINE_VERSION, interactive=not args.yes)
+        print(f'Godot: {args.godot} ({ENGINE_VERSION})')
         if not args.yes:
             # /dev/tty supports curl | sh; stdin supports explicitly piped answers.
             with contextlib.ExitStack() as stack:
@@ -312,7 +309,6 @@ def main(argv: list[str] | None = None) -> int:
                     return line.strip() or str(default)
                 chosen_project = ask('Project to link now, or later', args.project or 'later')
                 args.project = None if chosen_project.lower() == 'later' else Path(chosen_project).expanduser()
-                args.godot = ask('Godot executable', args.godot)
                 args.home = Path(ask('Installation directory', args.home)).expanduser()
                 clients = detect_clients(args.project)
                 suggested = str(args.client_config or (clients[0]['path'] if clients else 'manual'))
@@ -321,7 +317,7 @@ def main(argv: list[str] | None = None) -> int:
                 if args.client_config:
                     suggested_format = next((c['format'] for c in clients if c['path'] == args.client_config), args.client_format)
                     args.client_format = ask('Config format (json/codex/vscode)', suggested_format)
-                print(f'Install {PRODUCT_VERSION} for Godot {ENGINE_VERSION} on {platform.system()} {platform.machine()}\nProject: {args.project}\nLocation: {args.home}\nClient: {args.client_config or "manual settings"}')
+                print(f'Install {PRODUCT_VERSION} for Godot {ENGINE_VERSION} on {platform.system()} {platform.machine()}\nGodot: {args.godot}\nProject: {args.project}\nLocation: {args.home}\nClient: {args.client_config or "manual settings"}')
                 if ask('Continue? (yes/no)', 'yes').lower() not in ('y', 'yes'):
                     print('Cancelled; no changes made.')
                     return 0

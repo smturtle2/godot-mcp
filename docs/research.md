@@ -133,3 +133,9 @@ neighbors, input-driven scene transitions, screenshots, metrics, DAP suspension,
 asset reconciliation, export, and a clean packaged install. Schema/transport and
 installer failure paths receive unit tests. Cross-platform claims depend on CI
 results; unsupported features are documented explicitly.
+
+## Installer follow-up: automatic Godot detection and uv isolation
+
+The [Godot 4.7 command-line tutorial](https://docs.godotengine.org/en/4.7/tutorials/editor/command_line_tutorial.html) documents PATH usage, `--version`, and the macOS `Godot.app/Contents/MacOS/Godot` executable. Discovery checks PATH and bounded common application directories, validates the candidate, and prompts only on failure. Portable installations elsewhere can use `--godot`.
+
+The [uv environment reference](https://docs.astral.sh/uv/reference/environment/) and [project environment documentation](https://docs.astral.sh/uv/concepts/projects/config/#project-environment-path) explain environment targeting and package linking. Installer child processes discard inherited `VIRTUAL_ENV`/`UV_PROJECT_ENVIRONMENT` and explicitly use `--link-mode copy`. This fixes the observed environment-mismatch and cross-filesystem hardlink fallback warnings without changing user-global settings or hiding other diagnostics.
