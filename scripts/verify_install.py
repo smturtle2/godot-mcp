@@ -76,19 +76,16 @@ def verify(source: Path, godot: str, work_dir: Path | None) -> dict:
         project = root / "project"
         shutil.copytree(source / "tests/fixtures", project)
         home = root / "install"
-        config = root / "client.json"
         installer_env = dict(os.environ, PYTHONPATH=str(source / "src"))
         clean_env = dict(os.environ)
         clean_env.pop("PYTHONPATH", None)
         installer = [sys.executable, "-m", "godot_mcp.cli", "install", "--yes", "--source", str(source),
-                     "--home", str(home), "--client-config", str(config), "--godot", godot]
+                     "--home", str(home), "--godot", godot]
         first = run(installer, cwd=source, env=installer_env, timeout=90)
         executable = installed_executable(home)
-        config_data = json.loads(config.read_text())
-        entry = config_data["mcpServers"]["godot-mcp"]
-        if (Path(entry["command"]).resolve() != executable.resolve()
-                or entry["args"] != ["connect", "--home", str(home.resolve())] or not executable.is_file()):
-            raise RuntimeError("Client configuration does not point to the installed executable")
+        active = json.loads((home / "active.json").read_text())
+        if Path(active["executable"]).resolve() != executable.resolve() or not executable.is_file():
+            raise RuntimeError("Active installation does not point to the installed executable")
         version = run([str(executable), "version"], cwd=project, env=clean_env)
         global_smoke = asyncio.run(mcp_smoke(executable, project, clean_env, home, edit=False))
         link = [str(executable), "install", "--plugin-only", "--yes", "--home", str(home), "--project", str(project)]

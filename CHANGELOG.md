@@ -1,3 +1,9 @@
+# v4.7.2_3
+
+- Remove all MCP-client discovery, configuration-file editing, and automatic registration from the installer. Connection registration and process launch are entirely the client's responsibility.
+- Remove `--client-config`, `--client-format`, and `--name` installer options and the configuration-writing module/dependency. The installer prints only a generic stdio command.
+- Ignore legacy client-registration records during updates. Rollback restores only server/project state and never external app settings, including old transaction snapshots.
+
 # v4.7.2_2
 
 - Allow updates when a stopped editor leaves a previous-version endpoint behind. The installer verifies the recorded process is gone before disregarding that stale endpoint; running editors still block plugin updates.

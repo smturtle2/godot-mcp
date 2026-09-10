@@ -43,40 +43,31 @@ def test_enable_plugin_handles_multiline_array_and_rejects_invalid_syntax():
 
 def test_install_project_preserves_old_state_and_explicit_rollback(tmp_path):
     root = project(tmp_path)
-    config = tmp_path / "client.json"
-    config.write_text(json.dumps({"keep": {"value": 1}}))
     old_project = (root / "project.godot").read_bytes()
     old_addon = (root / "addons/godot_mcp/plugin.cfg").read_bytes()
     executable = tmp_path / "environment/bin/godot-mcp"
     home = tmp_path / "home"
-    record = installer.install_project(root, executable, home, config)
+    record = installer.install_project(root, executable, home)
     assert record["status"] == "installed"
     assert b"old addon" not in (root / "addons/godot_mcp/plugin.cfg").read_bytes()
-    assert json.loads(config.read_text())["keep"] == {"value": 1}
     restored = installer.rollback(Path(record["backup"]))
     assert restored["status"] == "rolled_back"
     assert (root / "project.godot").read_bytes() == old_project
     assert (root / "addons/godot_mcp/plugin.cfg").read_bytes() == old_addon
-    assert json.loads(config.read_text()) == {"keep": {"value": 1}}
 
 
-def test_install_project_rolls_back_everything_when_registration_fails(tmp_path, monkeypatch):
+def test_install_project_rolls_back_everything_when_link_write_fails(tmp_path, monkeypatch):
     root = project(tmp_path)
-    config = tmp_path / "client.json"
-    config.write_text('{"keep": true}\n')
     old_project = (root / "project.godot").read_bytes()
     old_addon = (root / "addons/godot_mcp/plugin.cfg").read_bytes()
-    old_config = config.read_bytes()
-
     def fail(*args, **kwargs):
-        raise ValueError("registration failed")
+        raise ValueError("link write failed")
 
-    monkeypatch.setattr(installer, "register_client", fail)
-    with pytest.raises(ValueError, match="registration failed"):
-        installer.install_project(root, tmp_path / "server", tmp_path / "home", config)
+    monkeypatch.setattr(installer, "_atomic_write", fail)
+    with pytest.raises(ValueError, match="link write failed"):
+        installer.install_project(root, tmp_path / "server", tmp_path / "home")
     assert (root / "project.godot").read_bytes() == old_project
     assert (root / "addons/godot_mcp/plugin.cfg").read_bytes() == old_addon
-    assert config.read_bytes() == old_config
 
 
 def test_stale_previous_version_endpoint_allows_install(monkeypatch, tmp_path):

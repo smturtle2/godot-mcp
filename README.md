@@ -24,7 +24,7 @@ Read the [tool reference](docs/tools.md) for the complete catalog and JSON schem
 
 ## Install once, connect your projects
 
-Requires **Godot 4.7.2**. The installer prepares uv, Python 3.13, and a versioned server environment for your user account.
+Requires **Godot 4.7.2**. The installer owns the user-level server environment, project plugin/linking records, the active executable, and the project index. Client registration and launch remain the responsibility of your MCP client.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/smturtle2/godot-mcp/main/install.sh | sh
@@ -36,17 +36,26 @@ Windows PowerShell:
 irm https://raw.githubusercontent.com/smturtle2/godot-mcp/main/install.ps1 | iex
 ```
 
-Choose your MCP app configuration during installation. You can link a Godot project now or later. Existing settings are preserved. Use the installed executable printed at the end to link another project:
+For a source checkout, the equivalent setup is:
 
-```sh
-"/absolute/installed/godot-mcp" install --plugin-only --yes --project /path/to/project
+```bash
+uv sync --frozen
+uv run godot-mcp install --yes --home /path/to/godot-mcp-home
 ```
 
-**Who starts what?** You open your AI app (for example, Codex or Cursor); it starts the registered MCP server automatically. Opening a linked Godot project enables its plugin and makes it discoverable. Either app can be opened first. No per-project MCP registration or manual server startup is needed.
+The installer prints a generic stdio command such as:
 
-With several projects open, `get_context` lists them. Select one with its `project` argument; the server remembers that choice for the session. Each tool also accepts an explicit project path.
+```text
+/path/to/installed/godot-mcp connect --home /path/to/godot-mcp-home
+```
 
-Re-run the installer to update the common server, saved MCP registrations, and linked plugins. Close linked Godot editors first. Add `--repair` for a fresh environment. See [installation, verification, and rollback](docs/installation.md).
+Add that command to your MCP client using its own registration flow. Your AI app starts the stdio server; Godot only registers an open project after its installed plugin is enabled. Link or repair a project with:
+
+```sh
+"/absolute/installed/godot-mcp" install --plugin-only --yes --project /path/to/project --home /path/to/godot-mcp-home
+```
+
+With several projects open, `get_context` lists them. Select one with its `project` argument; the server remembers that choice for the session. Each tool also accepts an explicit project path. Close linked Godot editors before updates. Re-run the installer to update the environment and linked plugins; use `--repair` for a fresh environment. See [installation, verification, and rollback](docs/installation.md).
 
 <details>
 <summary>Install from source</summary>
@@ -89,7 +98,7 @@ Typical tasks include:
 | Component | Version |
 | --- | --- |
 | Godot engine | 4.7.2 |
-| Product tag | `v4.7.2_2` |
+| Product tag | `v4.7.2_3` |
 | MCP protocol | `2026-07-28` |
 | Python | 3.13 |
 | License | EUPL-1.2 |

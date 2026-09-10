@@ -1,4 +1,4 @@
-"""Per-user versioned installation with a recoverable project/config transaction."""
+"""Per-user versioned installation with a recoverable server and project transactions."""
 from __future__ import annotations
 
 import argparse
@@ -19,7 +19,6 @@ from pathlib import Path
 import psutil
 
 from .bootstrap import installation_environment, probe_godot, resolve_godot
-from .client_config import _atomic_write, register_client, register_global_client
 from .version import ENGINE_VERSION, PRODUCT_VERSION
 
 
@@ -33,20 +32,21 @@ def executable_at(environment: Path) -> Path:
     return environment / ('Scripts/godot-mcp.exe' if os.name == 'nt' else 'bin/godot-mcp')
 
 
-def detect_clients(project: Path | None = None) -> list[dict]:
-    home = Path.home()
-    choices = [
-        {'name': 'Codex', 'path': home / '.codex/config.toml', 'format': 'codex'},
-        {'name': 'Cursor', 'path': home / '.cursor/mcp.json', 'format': 'json'},
+def _atomic_write(path: Path, data: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mode = path.stat().st_mode & 0o7777 if path.exists() else 0o600
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
-    ]
-    if project:
-        choices.append({'name': 'VS Code (project)', 'path': project / '.vscode/mcp.json', 'format': 'vscode'})
-    if sys.platform == 'darwin':
-        choices.append({'name': 'Claude Desktop', 'path': home / 'Library/Application Support/Claude/claude_desktop_config.json', 'format': 'json'})
-    elif os.name == 'nt':
-        choices.append({'name': 'Claude Desktop', 'path': Path(os.environ.get('APPDATA', home)) / 'Claude/claude_desktop_config.json', 'format': 'json'})
-    return [choice for choice in choices if choice['path'].exists()]
 
 
 def enable_plugin(source: str) -> str:
@@ -125,8 +125,7 @@ def _restore_file(path: Path, backup: Path | None) -> None:
         shutil.copy2(backup, path)
 
 
-def install_project(project: Path, executable: Path, home: Path, config: Path | None = None,
-                    config_format: str = 'json', name: str = 'godot-mcp') -> dict:
+def install_project(project: Path, executable: Path, home: Path) -> dict:
     project = project.resolve()
     project_file = project / 'project.godot'
     updated = enable_plugin(project_file.read_text(encoding='utf-8'))
@@ -166,16 +165,12 @@ def install_project(project: Path, executable: Path, home: Path, config: Path | 
         if target.is_symlink():
             raise ValueError('Refusing to replace a symlinked addon directory.')
         shutil.copytree(target, backup / 'addon')
-    config_existed = config is not None and config.exists()
-    if config_existed:
-        shutil.copy2(config, backup / 'client-config')
     index_path = home / 'projects' / (hashlib.sha256(str(project).encode()).hexdigest() + '.json')
     index_existed = index_path.exists()
     if index_existed:
         shutil.copy2(index_path, backup / 'index.json')
     record = {'index_existed': index_existed, 'project': str(project), 'executable': str(executable), 'version': PRODUCT_VERSION,
-              'addon_existed': existed, 'link_existed': link_existed, 'config': str(config.resolve()) if config else None,
-              'config_existed': config_existed, 'backup': str(backup), 'status': 'prepared'}
+              'addon_existed': existed, 'link_existed': link_existed, 'backup': str(backup), 'status': 'prepared'}
     (backup / 'transaction.json').write_text(json.dumps(record, indent=2))
     try:
         staged = Path(tempfile.mkdtemp(prefix='.godot-mcp-', dir=project))
@@ -189,9 +184,7 @@ def install_project(project: Path, executable: Path, home: Path, config: Path | 
             shutil.rmtree(staged)
         project_file.write_text(updated, encoding='utf-8')
         _atomic_write(link, json.dumps({'home': str(home.resolve()), 'version': PRODUCT_VERSION}))
-        registration = register_client(config, name, executable, project, config_format) if config else {
-            'settings': {'command': str(executable), 'args': ['serve', '--project', str(project)]}}
-        record.update(status='installed', registration=registration)
+        record.update(status='installed')
         (backup / 'transaction.json').write_text(json.dumps(record, indent=2))
         index = home / 'projects'
         index.mkdir(exist_ok=True)
@@ -203,25 +196,17 @@ def install_project(project: Path, executable: Path, home: Path, config: Path | 
             shutil.rmtree(target)
         if existed:
             shutil.copytree(backup / 'addon', target)
-        if config:
-            _restore_file(config, backup / 'client-config' if config_existed else None)
         _restore_file(link, backup / 'link.json' if link_existed else None)
         record['status'] = 'rolled_back'
         (backup / 'transaction.json').write_text(json.dumps(record, indent=2))
         raise
 
 
-def install_global(executable: Path, home: Path, project: Path | None = None,
-                   config: Path | None = None, config_format: str = 'json', name: str = 'godot-mcp') -> dict:
-    """Activate a tested environment, refresh linked plugins and saved registrations atomically."""
+def install_global(executable: Path, home: Path, project: Path | None = None) -> dict:
+    """Activate a tested environment, refresh linked plugins atomically."""
     home.mkdir(parents=True, exist_ok=True)
     os.chmod(home, 0o700)
-    clients_file, active_file = home / 'clients.json', home / 'active.json'
-    clients = json.loads(clients_file.read_text()) if clients_file.exists() else []
-    if config:
-        config = config.expanduser().resolve()
-        clients = [c for c in clients if not (c['path'] == str(config) and c['name'] == name)]
-        clients.append({'path': str(config), 'name': name, 'format': config_format})
+    active_file = home / 'active.json'
     projects = {Path(json.loads(p.read_text())['project']) for p in (home / 'projects').glob('*.json')}
     projects = {p for p in projects if (p / 'project.godot').is_file()}
     if project:
@@ -230,7 +215,7 @@ def install_global(executable: Path, home: Path, project: Path | None = None,
     backup.mkdir(parents=True)
     os.chmod(backup, 0o700)
     snapshots = []
-    for index, path in enumerate([clients_file, active_file, *[Path(c['path']) for c in clients]]):
+    for index, path in enumerate([active_file]):
         destination = backup / f'file-{index}'
         if path.exists():
             shutil.copy2(path, destination)
@@ -244,12 +229,8 @@ def install_global(executable: Path, home: Path, project: Path | None = None,
             child = install_project(linked, executable, home)
             record['children'].append(child['backup'])
             journal.write_text(json.dumps(record, indent=2))
-        registrations = [register_global_client(Path(c['path']), c['name'], executable, home, c['format']) for c in clients]
-        if not registrations:
-            registrations = [{'settings': {'command': str(executable), 'args': ['connect', '--home', str(home)]}}]
-        _atomic_write(clients_file, json.dumps(clients, indent=2))
         _atomic_write(active_file, json.dumps({'version': PRODUCT_VERSION, 'executable': str(executable)}, indent=2))
-        record.update(status='installed', registrations=registrations)
+        record.update(status='installed')
         journal.write_text(json.dumps(record, indent=2))
         return record
     except BaseException:
@@ -264,7 +245,9 @@ def rollback(transaction: Path) -> dict:
         for child in reversed(record['children']):
             rollback(Path(child))
         for item in reversed(record['snapshots']):
-            _restore_file(Path(item['path']), Path(item['backup']) if item['backup'] else None)
+            # Old journals may reference external app settings. Those are not ours to restore.
+            if Path(item['path']).resolve() == (backup.parent.parent / 'active.json').resolve():
+                _restore_file(Path(item['path']), Path(item['backup']) if item['backup'] else None)
         record['status'] = 'rolled_back'
         (backup / 'transaction.json').write_text(json.dumps(record, indent=2))
         return record
@@ -276,8 +259,6 @@ def rollback(transaction: Path) -> dict:
         shutil.rmtree(target)
     if record['addon_existed']:
         shutil.copytree(backup / 'addon', target)
-    if record['config']:
-        _restore_file(Path(record['config']), backup / 'client-config' if record['config_existed'] else None)
     _restore_file(project / '.godot-mcp/install.json', backup / 'link.json' if record.get('link_existed') else None)
     index = backup.parent.parent / 'projects' / (hashlib.sha256(str(project).encode()).hexdigest() + '.json')
     _restore_file(index, backup / 'index.json' if record.get('index_existed') else None)
@@ -292,9 +273,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--source', type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument('--home', type=Path, default=default_home())
     parser.add_argument('--godot')
-    parser.add_argument('--client-config', type=Path)
-    parser.add_argument('--client-format', choices=['json', 'codex', 'vscode'], default='json')
-    parser.add_argument('--name', default='godot-mcp')
     parser.add_argument('--yes', action='store_true', help='accept explicit/default values without prompts')
     parser.add_argument('--repair', action='store_true', help='prepare a fresh environment even if this version is installed')
     parser.add_argument('--plugin-only', action='store_true', help='reuse this installed executable; no environment preparation')
@@ -322,14 +300,7 @@ def main(argv: list[str] | None = None) -> int:
                 chosen_project = ask('Project to link now, or later', args.project or 'later')
                 args.project = None if chosen_project.lower() == 'later' else Path(chosen_project).expanduser()
                 args.home = Path(ask('Installation directory', args.home)).expanduser()
-                clients = detect_clients(args.project)
-                suggested = str(args.client_config or (clients[0]['path'] if clients else 'manual'))
-                chosen = ask('MCP configuration file, or manual', suggested)
-                args.client_config = None if chosen.lower() == 'manual' else Path(chosen).expanduser()
-                if args.client_config:
-                    suggested_format = next((c['format'] for c in clients if c['path'] == args.client_config), args.client_format)
-                    args.client_format = ask('Config format (json/codex/vscode)', suggested_format)
-                print(f'Install {PRODUCT_VERSION} for Godot {ENGINE_VERSION} on {platform.system()} {platform.machine()}\nGodot: {args.godot}\nProject: {args.project}\nLocation: {args.home}\nClient: {args.client_config or "manual settings"}')
+                print(f'Install {PRODUCT_VERSION} for Godot {ENGINE_VERSION} on {platform.system()} {platform.machine()}\nGodot: {args.godot}\nProject: {args.project}\nLocation: {args.home}')
                 if ask('Continue? (yes/no)', 'yes').lower() not in ('y', 'yes'):
                     print('Cancelled; no changes made.')
                     return 0
@@ -358,9 +329,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f'Linked {args.project}. Open it in Godot {ENGINE_VERSION}.')
             print(f'Rollback: "{executable}" install --rollback "{record["backup"]}"')
         else:
-            record = install_global(executable, args.home, args.project, args.client_config, args.client_format, args.name)
-            print(f'Installed {PRODUCT_VERSION} for this user. Restart your MCP client to load it.')
-            print(json.dumps(record['registrations'], indent=2))
+            record = install_global(executable, args.home, args.project)
+            print(f'Installed {PRODUCT_VERSION} for this user.')
+            print(f'Stdio command: "{executable}" connect --home "{args.home}"')
+            print('Connection registration and process launch belong to your MCP client.')
             print(f'Link another project: "{executable}" install --plugin-only --yes --home "{args.home}" --project PATH')
             print(f'Rollback: "{executable}" install --rollback "{record["backup"]}"')
         if args.project:

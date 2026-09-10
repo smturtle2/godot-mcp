@@ -10,8 +10,7 @@ Python server (server.py)
     ├── catalog.py       tool names, descriptions, JSON Schema 2020-12
     ├── bridge.py        loopback transport, validation, request/response errors
     ├── debugger.py      DAP connection and breakpoint/step operations
-    ├── installer.py     versioned environment, addon install, client registration
-    └── client_config.py JSON/TOML client configuration updates
+    └── installer.py     versioned environment, addon install, project linking
              │ authenticated loopback
              ▼
 Godot EditorPlugin (addon/plugin.gd)
@@ -32,8 +31,7 @@ Godot EditorPlugin (addon/plugin.gd)
 | `catalog.py` | Defines the 42 executable tool specifications and their input schemas. `docs/tools.md` is generated from this catalog. |
 | `bridge.py` | Validates project paths and values, manages the authenticated editor connection, and exposes tool calls and structured errors. |
 | `debugger.py` / `dap.py` | Implements debugger requests over Godot's DAP connection, including MCP-owned breakpoints and GDScript stepping. |
-| `installer.py` | Prepares a version-isolated installation, copies the addon, updates client registration, and records rollback state. |
-| `client_config.py` | Performs atomic JSON/TOML MCP configuration updates while preserving unrelated settings. |
+| `installer.py` | Prepares a version-isolated installation, copies the addon, records project links, maintains the active executable and project index, and records rollback state. |
 | `cli.py` | Provides `version`, `serve`, `check`, and `install` commands. |
 | `version.py` | Single source for product, engine, and protocol versions. |
 
@@ -66,4 +64,4 @@ The normal deployment is one client-started stdio process. `connect --home` crea
 
 `serve --project` remains a compatibility path for a client that already supplies one project. In that mode the bridge is fixed to that project and rejects a different selector.
 
-The installer’s global transaction updates the active executable, client registrations, and every project recorded under the same home. Its rollback journal contains child project transactions and snapshots of global configuration, so rollback restores the full installation scope.
+The installer’s global transaction updates the active executable and every project recorded under the same home. Its rollback journal contains child project transactions and snapshots of the active executable and project index, so rollback restores the installer-owned scope. Client registration and launch remain outside this transaction and are managed by the MCP client.

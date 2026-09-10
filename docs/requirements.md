@@ -58,15 +58,15 @@ Source: `godot-mcp-plan-v4.7.2_0.html` (the Korean development request). Each to
 
 ## Installation and connection requirements
 
-- Manage the server, runtime and common MCP configuration per user; install and enable the plugin per project and reuse compatible existing server registrations when adding projects.
+- Manage the server environment per user; install and enable the plugin per project, and record linked projects for discovery.
 - Provide an HTTPS install address in README. Support shell entry points on macOS/Linux and, where Windows is supported, a PowerShell entry point; prepare `uv` and the required Python before running an interactive installer.
-- Detect OS/architecture, Godot executable, project and MCP client; show detected values as editable defaults.
+- Detect OS/architecture, Godot executable, and optional project; show detected values as editable defaults. MCP client registration remains client-owned.
 - Recommend the newest stable MCP revision compatible with the detected Godot/platform. Show version, install location and settings; support edit/cancel and report when no compatible artifact exists.
-- Verify the distribution, prepare the Python/dependency environment with `uv`, install server and project plugin, preserve existing MCP settings, and provide copyable connection settings when automatic registration is unavailable.
+- Verify the distribution, prepare the Python/dependency environment with `uv`, install the server and project plugin, and print a generic stdio `connect --home` command for client-side registration.
 - Guide remaining activation steps, then verify the tool list and `get_context` versions/project connection. Distinguish installation completion from successful connection.
-- Isolate server environments by product version and register the installed server executable path. Reuse the prepared environment for normal runs without changing dependencies.
+- Isolate server environments by product version, record the active executable and linked project index, and reuse the prepared environment for normal runs without changing dependencies.
 - Default to user permissions, support answers through piped execution, and provide non-interactive/manual installation paths.
-- Re-running the installer must support update/repair, refresh the plugin and connection settings after validating the new environment, preserve unrelated project/MCP settings, and allow rollback or retry after failure.
+- Re-running the installer must support update/repair, refresh linked project plugins after validating the new environment, preserve unrelated project settings, and allow rollback or retry after failure.
 
 ## GitHub release and versioning requirements
 

@@ -14,7 +14,6 @@ dependencies = [
     "mcp==2.2.0",
     "websockets>=15,<17",
     "jsonschema>=4.23,<5",
-    "tomlkit>=0.13,<1",
     "psutil>=7,<9",
 ]
 
