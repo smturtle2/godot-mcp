@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
 from pathlib import Path
 
@@ -30,6 +31,9 @@ def parser() -> argparse.ArgumentParser:
     check_parser.add_argument("--project", required=True, type=project_arg)
     sub.add_parser("version", help="print version information")
     from .installer import default_home
+    init_parser = sub.add_parser("init", help="install and enable the plugin in a Godot project")
+    init_parser.add_argument("project", nargs="?", type=project_arg, default=Path.cwd())
+    init_parser.add_argument("--home", type=Path, default=default_home())
     connect_parser = sub.add_parser("connect", help="serve MCP over stdio with project discovery")
     connect_parser.add_argument("--home", type=Path, default=default_home())
     install_parser = sub.add_parser("install", help="run the interactive installer")
@@ -53,8 +57,8 @@ async def _check(project: Path) -> int:
                 async with ClientSession(*client_streams) as client:
                     await client.initialize()
                     listed = await client.list_tools()
-                    if len(listed.tools) != 42 or len({tool.name for tool in listed.tools}) != 42:
-                        print("Catalog check failed: MCP list_tools did not return 42 unique tools.", file=sys.stderr)
+                    if len(listed.tools) != 43 or len({tool.name for tool in listed.tools}) != 43:
+                        print("Catalog check failed: MCP list_tools did not return 43 unique tools.", file=sys.stderr)
                         return 1
                     result = await client.call_tool("get_context", {})
                     if result.is_error:
@@ -83,7 +87,7 @@ async def _check(project: Path) -> int:
             or context.get("protocol") != PROTOCOL_VERSION):
         print("Connection check failed: get_context version/project metadata does not match.", file=sys.stderr)
         return 1
-    print("MCP catalog: 42 tools")
+    print("MCP catalog: 43 tools")
     print("Editor connection: OK (get_context)")
     return 0
 
@@ -101,6 +105,14 @@ def main(argv: list[str] | None = None) -> int:
     if args and args[0] == "--project":
         args.insert(0, "serve")
     ns = parser().parse_args(args)
+    if ns.command == "init":
+        from .installer import initialize_project
+        try:
+            print(json.dumps(initialize_project(ns.project, ns.home), indent=2))
+        except (OSError, ValueError) as exc:
+            print(f"Plugin installation failed: {exc}", file=sys.stderr)
+            return 1
+        return 0
     if ns.command == "connect":
         asyncio.run(serve(None, home=ns.home))
         return 0

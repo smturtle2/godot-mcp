@@ -1,74 +1,58 @@
-# Development and upgrades
+# Development
 
-## Local setup
+## Setup and checks
 
-Use Python 3.13, Godot 4.7.2, and `uv`:
+Use the locked environment from the repository root:
 
 ```bash
 uv sync --frozen
-```
-
-Run the normal checks from the repository root:
-
-```bash
 uv run pytest
+uv run ruff check .
 uv run scripts/sync_version.py --check
 uv run scripts/generate_tool_docs.py --check
-uv run python scripts/build_release.py --skip-wheel --output dist/release
 ```
 
-The release command writes a reproducible source archive and manifest. Omit `--skip-wheel` when `uv` should build the wheel as well.
-
-## Test layers
-
-The unit and contract suite runs without Godot:
-
-```bash
-uv run pytest
-```
-
-The editor integration suite is opt in and uses a real local Godot editor:
+The unit and contract suite does not require Godot. Real editor coverage is opt in:
 
 ```bash
 GODOT_MCP_INTEGRATION=1 uv run pytest tests/test_editor_integration.py
 ```
 
-Use a local Godot 4.7.2 executable. The integration fixture starts an editor and requires a usable X11 display when exercising game viewport capture; set `GODOT` when `godot` is not on `PATH`. The suite covers representative authoring, resources, animation, TileMap, runtime, input, debugger, diagnostics, and export paths. It is a scope check for the implemented integration, not an exhaustive compatibility claim.
+That suite requires a supported local Godot editor and an X11 display for game viewport capture. Linux x86_64 is runtime-tested; native validation on macOS, Windows, and Linux ARM64 remains pending. Treat the suite as representative scope validation.
 
-## Generated and versioned files
+## Setup interfaces
 
-`src/godot_mcp/version.py` is the version source. `scripts/sync_version.py` propagates its engine, product, and protocol values to `src/godot_mcp/addon/version.gd` and `plugin.cfg`. `docs/tools.md` is generated from `godot_mcp.catalog.TOOL_SPECS`.
+The MCP client starts the registered `connect --home HOME` stdio server. The `install_plugin` setup tool accepts an absolute project directory and uses the server’s configured home to run the transactional plugin installer before an editor connection exists. `godot-mcp init [PROJECT] --home HOME` is the CLI equivalent; when `PROJECT` is omitted it uses the current folder. Do not add executable detection or prompts to these flows.
 
-After changing either source, run:
+## Generated files and releases
+
+`src/godot_mcp/version.py` is the version source. Synchronize addon metadata and tool documentation after changes:
 
 ```bash
 uv run scripts/sync_version.py
 uv run scripts/generate_tool_docs.py
 uv run scripts/sync_version.py --check
 uv run scripts/generate_tool_docs.py --check
-uv run pytest
 ```
 
-## Updating Godot or MCP
-
-Start with the official Godot [release archive](https://godotengine.org/download/archive/) and the target version's [release notes and changelog](https://godotengine.org/changelog/). For MCP protocol changes, read the official [MCP specification and announcements](https://modelcontextprotocol.io/specification/latest) and the [MCP blog](https://blog.modelcontextprotocol.io/). Record the API changes that affect editor classes, debugger/DAP behavior, rendering, input, or the MCP SDK before editing code.
-
-1. Update `src/godot_mcp/version.py` with the new engine/product/protocol values.
-2. Update `pyproject.toml` dependency pins or Python constraints when the SDK or runtime requires it.
-3. Run `uv lock` and then `uv sync --frozen` to validate the locked environment.
-4. Run `uv run scripts/sync_version.py` and `uv run scripts/generate_tool_docs.py`.
-5. Map each changed API to its module in [architecture](architecture.md), then run unit/contract tests and the real editor integration suite.
-6. Exercise all 42 tools through representative workflows, including editor edits, save/undo, runtime input/capture, debugger, and export. Record failures by scope; do not infer support for untested platforms or engine versions.
-7. Run the synchronization checks, full test suite, and release build. Confirm the source tag and manifest use the product version (current baseline: `v4.7.2_3`).
-
-Known debugger behavior must remain explicit: pausing outside a script frame cannot be stepped, and this target does not implement `step_out`. Preserve user breakpoints when changing MCP-owned breakpoints.
-
-## Release QA and publishing
-
-Before publishing, use a clean environment to validate installation, editor connection, the 42-tool catalog, and representative runtime operations. Inspect the generated manifest, SHA-256 values, and source archive contents. Publish only after QA passes:
+Build the reproducible source archive and manifest with:
 
 ```bash
-gh release create v4.7.2_3 dist/release/* --title "godot-mcp v4.7.2_3" --generate-notes
+uv run python scripts/build_release.py --output dist/release
 ```
 
-Update existing installations only after the new release is available and its checks pass. Keep the prior installation record for rollback. The release process is intentionally separate from source changes; do not publish from an unreviewed working tree.
+Use `--skip-wheel` when only the source archive is needed. Inspect artifact names, sizes, and SHA-256 values before publishing. The public bootstrap fetches the latest stable release; no Godot executable or engine version is selected by the installer.
+
+Run the clean installation smoke check in a temporary directory:
+
+```bash
+uv run python scripts/verify_install.py
+```
+
+It checks environment setup, global stdio startup, plugin installation through MCP before Godot opens, CLI initialization, project discovery, editor connection, reinstall reuse, and repair. It requires a usable supported Godot runtime, but the installer itself does not locate or prompt for that executable.
+
+## Engine and protocol updates
+
+Review upstream release and API changes before editing integration code. Update `src/godot_mcp/version.py`, adjust dependency constraints in `pyproject.toml` when needed, then run `uv lock` and `uv sync --frozen`. Regenerate addon metadata and tool documentation, run unit and opt-in editor tests, exercise representative setup and editor workflows, and repeat the clean installation check.
+
+Keep debugger limitations explicit: pausing outside a GDScript frame cannot be stepped, and `step_out` is unsupported by the current Godot DAP adapter. Update the MCP client’s registered executable path after an environment update if the installer prints a new path; there is no stable launcher.

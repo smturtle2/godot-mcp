@@ -1,89 +1,8 @@
-# Installation
+# Setup and troubleshooting
 
-`godot-mcp` is started by the MCP client as a standard stdio server. The client launches one global `godot-mcp connect --home HOME` process; Godot does not launch a Python daemon. Client registration and process launch are entirely client responsibilities.
+`godot-mcp` is a client-started MCP server over local stdio. The MCP client launches the registered command when needed; you do not run a separate server terminal. Open Godot separately. The public bootstrap installs the latest stable release and does not detect, prompt for, or pin a Godot executable or engine version.
 
-## Install the server environment
-
-The installer owns the user-level server environment and project integration records. It does not detect, edit, or register any particular MCP client.
-
-```bash
-uv sync --frozen
-uv run godot-mcp install --yes --home /path/to/godot-mcp-home
-```
-
-The installer prepares a versioned executable and prints a generic command equivalent to:
-
-```text
-/path/to/installed/godot-mcp connect --home /path/to/godot-mcp-home
-```
-
-Register that command using your MCP client’s own setup flow. No named client product or client-specific configuration path is required by this project.
-
-## Link a project
-
-With the server environment prepared, close the project in Godot and link or repair it with:
-
-```bash
-/path/to/installed/godot-mcp install --plugin-only --yes \
-  --project /path/to/project \
-  --home /path/to/godot-mcp-home
-```
-
-The installer copies the matching Godot plugin and records the project link under `HOME/projects`. It also maintains `HOME/active.json`. Open the project again and enable the installed plugin. Godot then publishes its authenticated endpoint for discovery.
-
-## Connect and select
-
-Start the generic stdio command through your MCP client, or run it manually:
-
-```bash
-/path/to/installed/godot-mcp connect --home /path/to/godot-mcp-home
-```
-
-Every tool accepts an optional `project` selector when discovery is enabled. Call `get_context` first:
-
-- with no open linked project, it reports a ready server and an empty project list;
-- with one open linked project, it selects that project automatically;
-- with several open linked projects, it returns the project list and requires an absolute `project` path;
-- after a successful selection, later calls in the same MCP connection reuse that project;
-- if the selected project closes or becomes incompatible, calls fail with `PROJECT_CLOSED` or the corresponding connection error instead of silently switching projects.
-
-A dedicated compatibility process remains available for scripts that already know the project:
-
-```bash
-uv run godot-mcp serve --project /path/to/project
-```
-
-## Verify
-
-With the project open in Godot, verify the editor and catalog:
-
-```bash
-uv run godot-mcp check --project /path/to/project
-```
-
-The check reports the matching product, engine, protocol, and 42-tool catalog. A successful installation means the environment and project plugin were prepared; it does not by itself mean an editor is connected.
-
-## Update and rollback
-
-Run the installer again with the same `HOME` to update the active executable and refresh projects already recorded there. Close all linked editors first, then reopen them after the update. The installer validates the new environment before changing project files.
-
-Each global transaction records child project transactions plus snapshots of the active executable and project index. Rolling back the global transaction restores all child project addon/project metadata and the global active/index state:
-
-```bash
-/path/to/installed/godot-mcp install --rollback /path/to/home/transactions/TIMESTAMP-global
-```
-
-A project-only transaction can be rolled back independently when it was installed separately. Client registration changes, if any, are outside the installer transaction and must be managed by the client.
-
-## Troubleshooting
-
-- `NO_OPEN_PROJECT`: open the project in Godot and enable the matching plugin.
-- `PROJECT_REQUIRED`: call `get_context` with the absolute `project` path shown in the returned list.
-- `PROJECT_CLOSED`: reopen the project or select another currently open project in a new call.
-- `VERSION_MISMATCH`: update the project plugin and server from the same product release.
-- `EDITOR_DISCONNECTED`: check that the plugin is enabled and that the endpoint belongs to the project being selected.
-
-## Release bootstrap
+## Install the server
 
 Linux/macOS:
 
@@ -97,8 +16,74 @@ Windows PowerShell:
 irm https://raw.githubusercontent.com/smturtle2/godot-mcp/main/install.ps1 | iex
 ```
 
-The bootstrap prepares uv and Python, verifies the release manifest, and invokes the same environment/project installer. It prints the generic `connect --home` command; configure that command in the MCP client yourself. Godot and export templates are installed separately.
+The installer owns the versioned server environment, project plugin/linking records, active executable, and project index. It prints a generic command such as:
 
-The installer detects Godot from PATH and common application locations and verifies its version. It asks for the executable path only if detection fails; `--godot PATH` always overrides discovery. With `--yes`, failed detection exits with guidance instead of prompting. Pass `--home PATH` and, when linking, `--project PATH`. No stable launcher is provided by this repository.
+```text
+/path/to/installed/godot-mcp connect --home /path/to/godot-mcp-home
+```
 
-Keep `.godot-mcp/` out of project version control; it contains machine-local linking data and an authentication token. Linux x86_64 is runtime-tested; native validation on other supported platforms remains outstanding.
+Register that command with your MCP client using its own setup flow. The executable path may change after an update, so replace the client command with the newly printed path. This release has no stable launcher.
+
+## Install the project plugin with your AI
+
+With the stdio server registered, ask your AI assistant to install the plugin for an absolute project directory. The `install_plugin` setup tool uses the server’s configured `--home` and the existing transactional installer. It works before any Godot connection exists.
+
+Close the project in Godot before installing its plugin. The installer enables the plugin automatically; open the project after installation. The editor then publishes its authenticated endpoint for discovery.
+
+## CLI alternative
+
+`init` performs the same project linking flow from a terminal. Its default project is the current folder:
+
+```bash
+/path/to/installed/godot-mcp init /path/to/project --home /path/to/godot-mcp-home
+/path/to/installed/godot-mcp init --home /path/to/godot-mcp-home
+```
+
+Use the installation home printed by the installer. An explicit source checkout remains available for developers:
+
+```bash
+uv sync --frozen
+uv run godot-mcp install --source /path/to/godot-mcp --home /path/to/godot-mcp-home
+```
+
+The older project-bound form remains useful when a client already supplies the project:
+
+```bash
+/path/to/installed/godot-mcp serve --project /path/to/project
+```
+
+## Connect and select
+
+Every editor/runtime tool accepts an optional absolute `project` selector when discovery is enabled. Call `get_context` first:
+
+- one open linked project is selected automatically;
+- several open projects are listed and require an explicit project path;
+- a successful selection is remembered for the MCP connection;
+- a closed or incompatible selected project returns an error instead of silently switching.
+
+The setup tool is the exception: `install_plugin` takes an absolute project directory and can prepare the plugin without an active editor connection.
+
+## Verify and update
+
+Ask the AI to call `get_context`, or use the compatibility check while Godot is open:
+
+```bash
+/path/to/installed/godot-mcp check --project /path/to/project
+```
+
+A successful installation means the server environment and project plugin were prepared. Connection compatibility is checked against the supported Godot runtime when the editor connects; the current release targets Godot 4.7.2.
+
+Close linked Godot projects before updating. Re-run the installer with the same home, or use `init`/`install_plugin` to refresh a project. Global transactions retain child project transactions and restore installer-owned server/project state on rollback. MCP client registration is outside that transaction.
+
+## Troubleshooting
+
+| Symptom | Action |
+| --- | --- |
+| The client cannot start the server | Check the printed executable path and `connect --home` arguments; update them after a server update. |
+| `NO_OPEN_PROJECT` | Open a linked project in Godot and enable the plugin. |
+| `PROJECT_REQUIRED` | Ask the AI to select an absolute project path from `get_context`. |
+| `PROJECT_CLOSED` | Reopen the project or select another open project. |
+| `EDITOR_DISCONNECTED` | Check that the project is open and the plugin is enabled. |
+| `VERSION_MISMATCH` | Use the supported Godot runtime and matching server/plugin release. |
+
+Keep the project’s `.godot-mcp/` directory out of version control; it contains machine-local linking data and an authentication token.

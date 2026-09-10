@@ -42,7 +42,10 @@ async def mcp_smoke(executable: Path, project: Path, env: dict[str, str], home: 
                 assert not context_result.is_error
                 assert context.get("server_ready") is True
                 assert context.get("projects", []) == []
-                return {"tools": len(listed.tools), "context": context}
+                installed = await client.call_tool("install_plugin", {"project": str(project)})
+                assert not installed.is_error, installed
+                assert (project / "addons/godot_mcp/plugin.cfg").is_file()
+                return {"tools": len(listed.tools), "context": context, "plugin_installed_by_mcp": True}
             created = await client.call_tool("create_nodes", {
                 "parent": {"scene": "res://main.tscn", "path": "."},
                 "nodes": [{"name": "SmokeChild", "class": "Node2D", "properties": {
@@ -50,7 +53,7 @@ async def mcp_smoke(executable: Path, project: Path, env: dict[str, str], home: 
                 }}]
             })
             scene = await client.call_tool("get_scene", {"scene": "res://main.tscn", "path": ".", "depth": 1})
-            assert len(listed.tools) == 42 and len({tool.name for tool in listed.tools}) == 42
+            assert len(listed.tools) == 43 and len({tool.name for tool in listed.tools}) == 43
             assert not context_result.is_error and context.get("version")
             assert context["version"].startswith("v") and context["protocol"]
             assert Path(context["project"]).resolve() == project.resolve()
@@ -80,7 +83,7 @@ def verify(source: Path, godot: str, work_dir: Path | None) -> dict:
         clean_env = dict(os.environ)
         clean_env.pop("PYTHONPATH", None)
         installer = [sys.executable, "-m", "godot_mcp.cli", "install", "--yes", "--source", str(source),
-                     "--home", str(home), "--godot", godot]
+                     "--home", str(home)]
         first = run(installer, cwd=source, env=installer_env, timeout=90)
         executable = installed_executable(home)
         active = json.loads((home / "active.json").read_text())
@@ -88,7 +91,7 @@ def verify(source: Path, godot: str, work_dir: Path | None) -> dict:
             raise RuntimeError("Active installation does not point to the installed executable")
         version = run([str(executable), "version"], cwd=project, env=clean_env)
         global_smoke = asyncio.run(mcp_smoke(executable, project, clean_env, home, edit=False))
-        link = [str(executable), "install", "--plugin-only", "--yes", "--home", str(home), "--project", str(project)]
+        link = [str(executable), "init", "--home", str(home)]
         run(link, cwd=project, env=clean_env, timeout=30)
         check_before = subprocess.run([str(executable), "check", "--project", str(project)], cwd=project, env=clean_env,
                                       capture_output=True, text=True, timeout=10)

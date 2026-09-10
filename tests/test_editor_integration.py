@@ -77,7 +77,7 @@ async def test_editor_authoring(editor):
     b, tmp = editor
     server = create_server(b.project, b)
     async with Client(server) as client:
-        assert len((await client.list_tools()).tools) == 42
+        assert len((await client.list_tools()).tools) == 43
         result = await client.call_tool('get_context', {})
         assert not result.is_error
     r = await call(b, 'create_nodes', parent=ref(), nodes=[{'name': n, 'class': c} for n, c in [('Sprite', 'Sprite2D'), ('Anim', 'AnimationPlayer'), ('Tree', 'AnimationTree'), ('Tiles', 'TileMapLayer')]])

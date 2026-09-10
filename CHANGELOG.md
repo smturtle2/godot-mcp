@@ -1,3 +1,11 @@
+# v4.7.2_4
+
+- Add `godot-mcp init [PROJECT]` and the `install_plugin` MCP tool to install and enable a project plugin before an editor connection exists. The catalog now contains 43 tools.
+- Simplify the README and user/developer references; remove obsolete planning, research, and validation documents.
+- Public bootstrap installs the latest stable release from GitHub Releases.
+- Installer ownership is limited to the server environment, project plugin/linking, active executable, and project index; MCP client registration and launch remain client responsibilities.
+- Installer does not detect, prompt for, or pin a Godot executable or installed engine version; compatibility is checked when connecting to a supported editor.
+
 # v4.7.2_3
 
 - Remove all MCP-client discovery, configuration-file editing, and automatic registration from the installer. Connection registration and process launch are entirely the client's responsibility.

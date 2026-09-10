@@ -5,7 +5,7 @@
 </p>
 
 <p align="center"><strong>Inspect, edit, run, and debug Godot projects through MCP.</strong><br>
-Give an MCP client a live, version-checked bridge to the Godot editor and game runtime.</p>
+Work with scenes, scripts, and a running game from your AI assistant.</p>
 
 <p align="center">
   <a href="https://github.com/smturtle2/godot-mcp/releases"><img src="https://img.shields.io/badge/Godot-4.7.2-478cbf?logo=godotengine&logoColor=white" alt="Godot 4.7.2"></a>
@@ -14,17 +14,13 @@ Give an MCP client a live, version-checked bridge to the Godot editor and game r
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-EUPL--1.2-green" alt="EUPL-1.2 license"></a>
 </p>
 
-## What it does
+## Get started
 
-`godot-mcp` connects an MCP client to a Godot project over an authenticated loopback bridge. Its 42 tools cover the editor, authored project files, runtime observation, input, debugging, animation, TileMap/TileSet work, settings, and export.
+Requires a supported Godot runtime (current release: **4.7.2**) and an MCP client that supports local stdio servers. Linux x86_64 is tested; native testing on macOS, Windows, and Linux ARM64 is pending.
 
-The bridge reports project, engine, product, and protocol versions through `get_context`. Mutating operations are staged through the editor where possible, with explicit save and undo behavior. Runtime operations return run identifiers and observations so an agent can verify what actually happened.
+### 1. Install the latest release
 
-Read the [tool reference](docs/tools.md) for the complete catalog and JSON schemas. The [architecture guide](docs/architecture.md) maps the server, bridge, editor plugin, and tool catalog.
-
-## Install once, connect your projects
-
-Requires **Godot 4.7.2**. The installer owns the user-level server environment, project plugin/linking records, the active executable, and the project index. Client registration and launch remain the responsibility of your MCP client.
+Linux/macOS:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/smturtle2/godot-mcp/main/install.sh | sh
@@ -36,94 +32,47 @@ Windows PowerShell:
 irm https://raw.githubusercontent.com/smturtle2/godot-mcp/main/install.ps1 | iex
 ```
 
-For a source checkout, the equivalent setup is:
+The public bootstrap fetches the latest stable release from GitHub Releases. It does not detect or ask for a Godot executable. The installer prepares the server environment and prints a generic stdio command; client registration and launch remain your MCP client’s responsibility.
+
+### 2. Ask your AI to install the project plugin
+
+Open your AI app with the registered stdio server and ask it to install the Godot plugin for an absolute project directory. The `install_plugin` setup tool uses the server’s configured `--home` and the same transactional installer used by the CLI. It can run before any Godot editor connection exists.
+
+Close the project in Godot before installation. The tool installs and enables the plugin; then open the project in Godot. Ask your AI:
+
+> Check the connected Godot project and describe the current scene.
+
+The server discovers open linked projects. If several are open, tell the assistant which absolute project path to use; the selection is remembered for that MCP connection.
+
+### CLI alternative
+
+Use `init` when you want to link the current folder (or the project path you provide) from a terminal:
+
+```bash
+/path/to/installed/godot-mcp init /path/to/project --home /path/to/godot-mcp-home
+```
+
+With no project argument, `init` uses the current folder. Use the executable and installation home printed by the installer. A source checkout can use the explicit developer workflow:
 
 ```bash
 uv sync --frozen
-uv run godot-mcp install --yes --home /path/to/godot-mcp-home
+uv run godot-mcp install --source "$PWD" --home /path/to/godot-mcp-home
 ```
 
-The installer prints a generic stdio command such as:
+After updates, the installed executable path may change. Update the MCP client’s stdio command to the newly printed path; there is no stable launcher in this release.
 
-```text
-/path/to/installed/godot-mcp connect --home /path/to/godot-mcp-home
-```
+See [setup and troubleshooting](docs/installation.md) for connection checks, updates, and rollback.
 
-Add that command to your MCP client using its own registration flow. Your AI app starts the stdio server; Godot only registers an open project after its installed plugin is enabled. Link or repair a project with:
+## Tools
 
-```sh
-"/absolute/installed/godot-mcp" install --plugin-only --yes --project /path/to/project --home /path/to/godot-mcp-home
-```
+There are **43 tools**: 42 editor/runtime tools plus the `install_plugin` setup tool. They cover scenes, scripts, resources, animation, TileMaps, game input, debugging, and exports. Changes can be inspected before saving; runtime tools report observations from the running game.
 
-With several projects open, `get_context` lists them. Select one with its `project` argument; the server remembers that choice for the session. Each tool also accepts an explicit project path. Close linked Godot editors before updates. Re-run the installer to update the environment and linked plugins; use `--repair` for a fresh environment. See [installation, verification, and rollback](docs/installation.md).
-
-<details>
-<summary>Install from source</summary>
-
-```bash
-git clone https://github.com/smturtle2/godot-mcp.git
-cd godot-mcp
-uv sync --frozen
-uv run godot-mcp install
-```
-
-Open a linked project, then verify its connection:
-
-```bash
-uv run godot-mcp check --project /path/to/project
-```
-
-</details>
-
-## Example workflows
-
-An MCP client can use the tools as a verified workflow rather than editing files blindly:
-
-```text
-get_context → find_assets → open_scene → get_scene
-create_nodes/update_nodes → save_documents → run_scene
-inspect_runtime → send_input → capture_viewport → stop_game
-```
-
-Typical tasks include:
-
-- inspect a scene and locate a node or script symbol;
-- create or update a scene subtree, then save only the requested documents;
-- run the game, send input, wait for a condition, and capture the real viewport;
-- inspect diagnostics or debugger state, set breakpoints, and step through GDScript;
-- author animation graphs, TileSet data, terrain paths, project settings, or export builds.
-
-## Version matrix
-
-| Component | Version |
-| --- | --- |
-| Godot engine | 4.7.2 |
-| Product tag | `v4.7.2_3` |
-| MCP protocol | `2026-07-28` |
-| Python | 3.13 |
-| License | EUPL-1.2 |
-
-The editor plugin and Python server must use compatible product and protocol versions. An incompatible connection fails with an explicit version mismatch.
-
-## Current limitations
-
-- The integration is pinned to Godot 4.7.2; other engine versions require validation before use.
-- Linux x86_64 is runtime-tested. Source packages and installers cover macOS, Windows, and Linux ARM64; native validation on those platforms remains outstanding.
-- Headless viewport capture returns an explicit unsupported result.
-- `debug_control` supports pause, continue, step over, and step into; `step_out` is unsupported on Godot 4.7.2.
-- Dynamic asset references reported by move/import operations require manual review.
-- Export success verifies the generated artifact exists; it does not verify that the exported artifact runs.
+Browse the [tool reference](docs/tools.md) for all tool descriptions and input schemas.
 
 ## Development
 
-```bash
-uv sync --frozen
-uv run pytest
-uv run ruff check .
-```
-
-See [development](docs/development.md) for the repository workflow and validation expectations. Contributions should preserve explicit version checks, truthful runtime observations, and safe save/undo boundaries.
+See [development](docs/development.md) for setup, tests, and releases, or [architecture](docs/architecture.md) for the server and Godot plugin design.
 
 ## License
 
-This project is licensed under the [EUPL-1.2](LICENSE).
+[EUPL-1.2](LICENSE).

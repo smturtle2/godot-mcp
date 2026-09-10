@@ -16,20 +16,19 @@ def archive(*entries):
     return stream.getvalue()
 
 
-def test_select_release_highest_stable_revision_and_exact_version():
-    releases = [
-        {"tag_name": "v4.7.2_0", "draft": False, "prerelease": False},
-        {"tag_name": "v4.7.2_2", "draft": False, "prerelease": False},
-        {"tag_name": "v4.7.2_9", "draft": True, "prerelease": False},
-        {"tag_name": "v4.7.2_8", "draft": False, "prerelease": True},
-        {"tag_name": "v4.6.4_99", "draft": False, "prerelease": False},
-    ]
-    assert bootstrap.select_release(releases, "4.7.2")["tag_name"] == "v4.7.2_2"
-    assert bootstrap.select_release(releases, "4.7.2", "v4.7.2_0")["tag_name"] == "v4.7.2_0"
-    with pytest.raises(ValueError, match="No stable release"):
-        bootstrap.select_release(releases, "4.7.3")
-    with pytest.raises(ValueError, match="No stable release"):
-        bootstrap.select_release(releases, "4.7.2", "v4.7.2_8")
+@pytest.mark.parametrize("release", [
+    {"tag_name": "v4.7.2_0", "draft": True, "prerelease": False},
+    {"tag_name": "v4.7.2_0", "draft": False, "prerelease": True},
+    {"tag_name": "4.7.2_0", "draft": False, "prerelease": False},
+    {"tag_name": "v4.7_0", "draft": False, "prerelease": False},
+])
+def test_validate_release_rejects_unstable_or_invalid_tags(release):
+    with pytest.raises(ValueError):
+        bootstrap.validate_release(release)
+
+
+def test_validate_release_returns_engine_from_stable_tag():
+    assert bootstrap.validate_release({"tag_name": "v4.7.2_3", "draft": False, "prerelease": False}) == "4.7.2"
 
 
 def test_safe_extract_accepts_root_and_single_prefixed_directory(tmp_path):
@@ -97,13 +96,36 @@ def test_main_refuses_checksum_mismatch_before_subprocess(tmp_path, monkeypatch,
                                 "sha256": hashlib.sha256(b"different").hexdigest()}]}
 
     def fake_fetch(url, _limit=0):
-        return json.dumps([release]).encode() if "api.github" in url else json.dumps(manifest).encode() if url == "https://manifest" else artifact
+        return json.dumps(release).encode() if url.endswith("/latest") else json.dumps(manifest).encode() if url == "https://manifest" else artifact
 
     called = []
     monkeypatch.setattr(bootstrap, "fetch", fake_fetch)
     monkeypatch.setattr(bootstrap, "platform_id", lambda: "linux-x86_64")
     monkeypatch.setattr(bootstrap.shutil, "which", lambda _name: "/usr/bin/uv")
     monkeypatch.setattr(bootstrap.subprocess, "call", lambda *args, **kwargs: called.append((args, kwargs)))
-    assert bootstrap.main(["--engine", "4.7.2"]) == 1
+    assert bootstrap.main([]) == 1
     assert called == []
     assert "integrity check failed" in capsys.readouterr().err
+
+
+def test_main_latest_release_never_discovers_godot_and_invokes_locked_uv(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.mkdir()
+    artifact = b"archive"
+    release = {"tag_name": "v4.7.2_1", "draft": False, "prerelease": False,
+               "assets": [{"name": "manifest.json", "browser_download_url": "https://manifest"}]}
+    manifest = {"schema_version": 1, "version": release["tag_name"], "engine": "4.7.2",
+                "platforms": {"linux-x86_64": True}, "artifacts": [{"kind": "source", "url": "https://archive",
+                "size": len(artifact), "sha256": hashlib.sha256(artifact).hexdigest()}]}
+    calls = []
+
+    def fetch(url, _limit=0):
+        return json.dumps(release).encode() if url.endswith("/latest") else json.dumps(manifest).encode() if url == "https://manifest" else artifact
+
+    monkeypatch.setattr(bootstrap, "fetch", fetch)
+    monkeypatch.setattr(bootstrap, "platform_id", lambda: "linux-x86_64")
+    monkeypatch.setattr(bootstrap.shutil, "which", lambda name: "/usr/bin/uv" if name == "uv" else pytest.fail("Godot discovery invoked"))
+    monkeypatch.setattr(bootstrap, "safe_extract", lambda data, target: source)
+    monkeypatch.setattr(bootstrap.subprocess, "call", lambda command, **kwargs: calls.append((command, kwargs)) or 0)
+    assert bootstrap.main(["--yes", "--project", "/tmp/project"]) == 0
+    assert calls and "--frozen" in calls[0][0] and "--link-mode" in calls[0][0]

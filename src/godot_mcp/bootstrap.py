@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Download a compatible release, verify its archive, and run its locked installer."""
+"""Download the latest stable release, verify its archive, and run its locked installer."""
 from __future__ import annotations
 
 import argparse
@@ -31,83 +31,6 @@ def installation_environment(environment: Path | None = None) -> dict[str, str]:
     return env
 
 
-def godot_candidates() -> list[str]:
-    """Use configured commands and standard app locations; never scan whole disks."""
-    candidates = []
-    if os.environ.get('GODOT'):
-        candidates.append(os.environ['GODOT'])
-    for name in ('godot', 'godot4', 'godot-mono', 'Godot'):
-        command = shutil.which(name)
-        if command:
-            candidates.append(command)
-    if sys.platform == 'darwin':
-        for directory in (Path('/Applications'), Path.home() / 'Applications'):
-            for bundle in sorted(directory.glob('Godot*.app')):
-                candidates.append(str(bundle / 'Contents/MacOS/Godot'))
-    elif os.name == 'nt':
-        for directory in (Path(os.environ.get('LOCALAPPDATA', Path.home() / 'AppData/Local')) / 'Programs/Godot',
-                          Path(os.environ.get('ProgramFiles', 'C:/Program Files')) / 'Godot'):
-            candidates.extend(str(p) for p in sorted(directory.glob('Godot*.exe')))
-    else:
-        for directory in (Path.home() / '.local/bin', Path('/usr/local/bin'), Path('/usr/bin')):
-            candidates.extend(str(directory / name) for name in ('godot', 'godot4') if (directory / name).is_file())
-    return list(dict.fromkeys(candidates))
-
-
-def probe_godot(command: str, expected: str | None = None) -> tuple[str, str]:
-    command = command.strip()
-    if len(command) >= 2 and command[0] == command[-1] and command[0] in ('"', "'"):
-        command = command[1:-1]
-    path = Path(command).expanduser()
-    if path.suffix.lower() == '.app':
-        path = path / 'Contents/MacOS/Godot'
-    executable = shutil.which(str(path)) or str(path.resolve())
-    result = subprocess.run([executable, '--version'], text=True, capture_output=True, timeout=10, check=True)
-    match = re.search(r'(?m)^(\d+\.\d+\.\d+)\.(?:stable|dev|alpha|beta|rc)', result.stdout.strip())
-    if not match:
-        raise ValueError('The selected executable did not return a recognizable Godot version.')
-    version = match[1]
-    if expected and version != expected:
-        raise ValueError(f'Godot {expected} is required; detected {version}.')
-    return executable, version
-
-
-def _prompt_godot() -> str:
-    import contextlib
-    with contextlib.ExitStack() as stack:
-        terminal = sys.stdin
-        if not sys.stdin.isatty() and os.name != 'nt':
-            with contextlib.suppress(OSError):
-                terminal = stack.enter_context(open('/dev/tty', encoding='utf-8'))
-        print('Godot executable path (blank to cancel): ', end='', flush=True)
-        line = terminal.readline()
-        if not line.strip():
-            raise ValueError('No Godot path provided. Use --godot PATH for unattended installation.')
-        return line.strip()
-
-
-def resolve_godot(command: str | None = None, *, expected: str | None = None,
-                  interactive: bool = True, prompt=None) -> tuple[str, str]:
-    errors = []
-    for candidate in ([command] if command else godot_candidates()):
-        try:
-            return probe_godot(candidate, expected)
-        except (OSError, ValueError, subprocess.SubprocessError) as exc:
-            errors.append(str(exc))
-    detail = f' {errors[-1]}' if errors else ''
-    if not interactive:
-        raise ValueError('Could not find a usable Godot executable. Supply --godot PATH.' + detail)
-    print('Godot automatic detection failed.' + detail, file=sys.stderr)
-    while True:
-        candidate = (prompt or _prompt_godot)()
-        if not candidate.strip():
-            raise ValueError('Godot path entry cancelled.')
-        try:
-            return probe_godot(candidate, expected)
-        except (OSError, ValueError, subprocess.SubprocessError) as exc:
-            print(f'Cannot use this Godot executable: {exc}', file=sys.stderr)
-
-
 def fetch(url: str, limit: int = 100 * 1024 * 1024) -> bytes:
     if urllib.parse.urlsplit(url).scheme != 'https':
         raise ValueError('Release downloads require HTTPS.')
@@ -127,18 +50,12 @@ def platform_id() -> str:
     return f'{system}-{machine}'
 
 
-def select_release(releases: list[dict], engine: str, version: str | None = None) -> dict:
-    candidates = []
-    for release in releases:
-        tag = release.get('tag_name', '')
-        match = re.fullmatch(r'v(\d+\.\d+\.\d+)_(\d+)', tag)
-        if not match or release.get('draft') or release.get('prerelease'):
-            continue
-        if match[1] == engine and (version is None or tag == version):
-            candidates.append((int(match[2]), release))
-    if not candidates:
-        raise ValueError(f'No stable release is compatible with Godot {engine}' + (f' ({version})' if version else '') + '.')
-    return max(candidates, key=lambda item: item[0])[1]
+def validate_release(release: dict) -> str:
+    """Validate GitHub's latest stable release and return its engine metadata."""
+    match = re.fullmatch(r'v(\d+\.\d+\.\d+)_(\d+)', release.get('tag_name', ''))
+    if not match or release.get('draft') or release.get('prerelease'):
+        raise ValueError('Latest release is not a supported stable Godot MCP release.')
+    return match[1]
 
 
 def safe_extract(data: bytes, target: Path) -> Path:
@@ -168,9 +85,6 @@ def safe_extract(data: bytes, target: Path) -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument('--version')
-    parser.add_argument('--engine')
-    parser.add_argument('--godot')
     parser.add_argument('--source', type=Path, help='install a local source checkout without downloading a release')
     args, remaining = parser.parse_known_args(argv)
     try:
@@ -179,15 +93,9 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError('uv is required. Run install.sh/install.ps1 or install uv first.')
         if args.source:
             source = args.source.resolve()
-            godot_args = ['--godot', args.godot] if args.godot else []
-            return subprocess.call([uv, 'run', '--project', str(source), '--frozen', '--no-dev', '--link-mode', 'copy', 'godot-mcp', 'install', '--source', str(source), *godot_args, *remaining], env=installation_environment())
-        engine = args.engine
-        if not engine or args.godot:
-            args.godot, detected_engine = resolve_godot(args.godot, expected=engine, interactive='--yes' not in remaining)
-            engine = engine or detected_engine
-            print(f'Godot: {args.godot} ({engine})', flush=True)
-        releases = json.loads(fetch(API + '?per_page=100', 5 * 1024 * 1024))
-        release = select_release(releases, engine, args.version)
+            return subprocess.call([uv, 'run', '--project', str(source), '--frozen', '--no-dev', '--link-mode', 'copy', 'godot-mcp', 'install', '--source', str(source), *remaining], env=installation_environment())
+        release = json.loads(fetch(API + '/latest', 5 * 1024 * 1024))
+        engine = validate_release(release)
         manifest_asset = next((a for a in release['assets'] if a['name'] == 'manifest.json'), None)
         if manifest_asset is None:
             raise ValueError('Release has no installation manifest.')
@@ -204,8 +112,7 @@ def main(argv: list[str] | None = None) -> int:
         with tempfile.TemporaryDirectory(prefix='godot-mcp-install-') as directory:
             source = safe_extract(data, Path(directory))
             # Both the bootstrap environment and final installation honor the release lock.
-            godot_args = ['--godot', args.godot] if args.godot else []
-            return subprocess.call([uv, 'run', '--project', str(source), '--frozen', '--no-dev', '--link-mode', 'copy', 'godot-mcp', 'install', '--source', str(source), *godot_args, *remaining], env=installation_environment())
+            return subprocess.call([uv, 'run', '--project', str(source), '--frozen', '--no-dev', '--link-mode', 'copy', 'godot-mcp', 'install', '--source', str(source), *remaining], env=installation_environment())
     except (OSError, ValueError, KeyError, StopIteration, subprocess.SubprocessError, zipfile.BadZipFile) as exc:
         print(f'Installation failed: {exc}', file=sys.stderr)
         return 1

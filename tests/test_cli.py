@@ -49,7 +49,7 @@ def test_check_reports_catalog_and_connection(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("godot_mcp.bridge.EditorBridge.call", fake_call)
     assert cli.main(["check", "--project", str(tmp_path)]) == 0
     output = capsys.readouterr().out
-    assert "42 tools" in output
+    assert "43 tools" in output
     assert "Editor connection: OK" in output
 
 

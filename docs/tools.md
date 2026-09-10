@@ -4,53 +4,77 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 
 | # | Tool | Description |
 |---:|---|---|
-| 1 | `get_context` | Read project/engine/product/protocol versions, active scene, selection, unsaved documents and actual run state. |
-| 2 | `find_assets` | Search filenames, source text or symbols. Returns reusable res:// URIs and one-based source locations. |
-| 3 | `get_class_info` | Inspect actual engine or project script classes, properties, methods and signals; optionally filter a member. |
-| 4 | `get_scene` | Inspect live scene nodes, unsaved values, connections, inheritance overrides and actual Control layout. |
-| 5 | `open_scene` | Open and activate a saved scene in the editor. |
-| 6 | `create_scene` | Create a scene with a typed root or inherited source. Saves the new file and returns its root reference. |
-| 7 | `create_nodes` | Create a related subtree, scene instances or duplicates in one undoable edit. Returns actual names and references. |
-| 8 | `update_nodes` | Batch node properties, names and reparenting in one scene. Use references in the source scene to edit the original. Container-controlled layout is reported. |
-| 9 | `delete_nodes` | Delete related nodes with undo; report affected persistent connections and NodePath references. Reject inherited members and overlapping selections. |
-| 10 | `save_documents` | Save only the specified scene, script or resource documents. Returns saved and failed entries separately. |
-| 11 | `undo_edit` | Undo the latest MCP edit if its editor history has not changed since. Filesystem operations report their separate rollback scope. |
-| 12 | `get_resource` | Read resource properties, nested references, known users and import provenance. Sharing scan covers open scenes and indexed project dependencies. |
-| 13 | `create_resource` | Create an in-memory resource, optionally attach it or save it. Returns a reusable resource URI. |
-| 14 | `update_resource` | Change a resource with explicit node-local or shared scope. Imported shared sources require detaching to an authored resource. |
-| 15 | `read_script` | Read current unsaved GDScript or shader source, content revision and symbol positions. Ranges use one-based Unicode columns and exclusive ends. |
-| 16 | `create_script` | Create GDScript or a shader and return compiler diagnostics. GDScript attaches to nodes; shaders attach to ShaderMaterial resources. |
-| 17 | `edit_script` | Edit source using an exact revision and non-overlapping one-based ranges. Updates the live document; save explicitly to persist. |
-| 18 | `update_signals` | Connect/disconnect persistent signal handlers with optional binds in one scene. Missing handler code is reported. |
-| 19 | `get_animation` | Inspect animation tracks/keys or AnimationTree states, transitions, blend connections and parameter values. |
-| 20 | `edit_animation` | Create or edit an AnimationPlayer animation and typed tracks/keys. Node scope isolates a player's shared library; shared scope is explicit. |
-| 21 | `edit_animation_graph` | Build state machines or blend trees/spaces with transitions, connections and parameters, as one undoable graph edit. |
-| 22 | `preview_animation` | Interpolate a pose at a time, capture the real editor viewport, and restore values. Method/audio tracks are not executed. |
-| 23 | `get_tilemap` | Read TileMapLayer cells and reusable atlas/tile/terrain identifiers. Reads a bounded region or up to limit used cells. |
-| 24 | `edit_tileset` | Author atlas tiles, collision polygons and terrain/peering rules on a staged TileSet, then commit with undo. |
-| 25 | `paint_tiles` | Paint cells, regions, patterns or terrain paths and report all actual changes including auto-connected neighbors. Undo restores prior cells. |
-| 26 | `inspect_runtime` | Read the actual game's scene tree or node properties with run ID and observation time. |
-| 27 | `capture_viewport` | Return actual PNG pixels plus viewport/capture coordinates. Headless rendering returns an explicit unsupported error. |
-| 28 | `wait_for_condition` | Observe scene/node/property/signal conditions until satisfied or a bounded timeout; returns last observation. |
-| 29 | `get_diagnostics` | Read actual compiler/runtime/editor diagnostics with cursor, revision, repeat counts and source positions. |
-| 30 | `sample_performance` | Measure supported Performance monitors over time; include units, sample count and conditions. Unknown metrics are rejected. |
-| 31 | `run_scene` | Start an editor-launched game and wait for the actual runtime helper handshake. Save/restart are explicit (default false). |
-| 32 | `stop_game` | Stop the specified run, release injected input, and confirm process termination. |
-| 33 | `send_input` | Send timestamped key/mouse/touch/action events through Godot input. Optionally observe a condition and capture afterward. Capture URI enables conversion from image coordinates. |
-| 34 | `inspect_debugger` | Read suspended DAP stack/scopes/variables; frame handles become stale on continue. GDScript is supported. |
-| 35 | `set_breakpoints` | Add/remove MCP-owned breakpoints while preserving user breakpoints. replace=true replaces only MCP-owned entries. |
-| 36 | `debug_control` | Pause, continue, step over or step into GDScript. step_out reports unsupported on Godot 4.7.2. |
-| 37 | `get_settings` | Read project settings, input mappings and autoloads with property metadata. |
-| 38 | `get_export_presets` | Read actual preset names/platforms and installed export-template readiness. |
-| 39 | `import_assets` | Copy local assets or reimport project assets with options, wait for Godot import, and report resource references and persistence risks. |
-| 40 | `move_assets` | Move project files with UID sidecars and reconcile serialized dependencies. Reject unsaved documents and report dynamic references needing review. |
-| 41 | `update_settings` | Apply project settings/input actions/autoload changes with undo; save project.godot explicitly to persist. |
-| 42 | `export_build` | Export with a real Godot preset via CLI and verify the output exists. Export success does not imply artifact execution. |
+| 1 | `install_plugin` | Install and enable the bundled plugin in an existing Godot project before connecting to the editor. Close the project in Godot first. Creates a rollback backup and registers project discovery. |
+| 2 | `get_context` | Read project/engine/product/protocol versions, active scene, selection, unsaved documents and actual run state. |
+| 3 | `find_assets` | Search filenames, source text or symbols. Returns reusable res:// URIs and one-based source locations. |
+| 4 | `get_class_info` | Inspect actual engine or project script classes, properties, methods and signals; optionally filter a member. |
+| 5 | `get_scene` | Inspect live scene nodes, unsaved values, connections, inheritance overrides and actual Control layout. |
+| 6 | `open_scene` | Open and activate a saved scene in the editor. |
+| 7 | `create_scene` | Create a scene with a typed root or inherited source. Saves the new file and returns its root reference. |
+| 8 | `create_nodes` | Create a related subtree, scene instances or duplicates in one undoable edit. Returns actual names and references. |
+| 9 | `update_nodes` | Batch node properties, names and reparenting in one scene. Use references in the source scene to edit the original. Container-controlled layout is reported. |
+| 10 | `delete_nodes` | Delete related nodes with undo; report affected persistent connections and NodePath references. Reject inherited members and overlapping selections. |
+| 11 | `save_documents` | Save only the specified scene, script or resource documents. Returns saved and failed entries separately. |
+| 12 | `undo_edit` | Undo the latest MCP edit if its editor history has not changed since. Filesystem operations report their separate rollback scope. |
+| 13 | `get_resource` | Read resource properties, nested references, known users and import provenance. Sharing scan covers open scenes and indexed project dependencies. |
+| 14 | `create_resource` | Create an in-memory resource, optionally attach it or save it. Returns a reusable resource URI. |
+| 15 | `update_resource` | Change a resource with explicit node-local or shared scope. Imported shared sources require detaching to an authored resource. |
+| 16 | `read_script` | Read current unsaved GDScript or shader source, content revision and symbol positions. Ranges use one-based Unicode columns and exclusive ends. |
+| 17 | `create_script` | Create GDScript or a shader and return compiler diagnostics. GDScript attaches to nodes; shaders attach to ShaderMaterial resources. |
+| 18 | `edit_script` | Edit source using an exact revision and non-overlapping one-based ranges. Updates the live document; save explicitly to persist. |
+| 19 | `update_signals` | Connect/disconnect persistent signal handlers with optional binds in one scene. Missing handler code is reported. |
+| 20 | `get_animation` | Inspect animation tracks/keys or AnimationTree states, transitions, blend connections and parameter values. |
+| 21 | `edit_animation` | Create or edit an AnimationPlayer animation and typed tracks/keys. Node scope isolates a player's shared library; shared scope is explicit. |
+| 22 | `edit_animation_graph` | Build state machines or blend trees/spaces with transitions, connections and parameters, as one undoable graph edit. |
+| 23 | `preview_animation` | Interpolate a pose at a time, capture the real editor viewport, and restore values. Method/audio tracks are not executed. |
+| 24 | `get_tilemap` | Read TileMapLayer cells and reusable atlas/tile/terrain identifiers. Reads a bounded region or up to limit used cells. |
+| 25 | `edit_tileset` | Author atlas tiles, collision polygons and terrain/peering rules on a staged TileSet, then commit with undo. |
+| 26 | `paint_tiles` | Paint cells, regions, patterns or terrain paths and report all actual changes including auto-connected neighbors. Undo restores prior cells. |
+| 27 | `inspect_runtime` | Read the actual game's scene tree or node properties with run ID and observation time. |
+| 28 | `capture_viewport` | Return actual PNG pixels plus viewport/capture coordinates. Headless rendering returns an explicit unsupported error. |
+| 29 | `wait_for_condition` | Observe scene/node/property/signal conditions until satisfied or a bounded timeout; returns last observation. |
+| 30 | `get_diagnostics` | Read actual compiler/runtime/editor diagnostics with cursor, revision, repeat counts and source positions. |
+| 31 | `sample_performance` | Measure supported Performance monitors over time; include units, sample count and conditions. Unknown metrics are rejected. |
+| 32 | `run_scene` | Start an editor-launched game and wait for the actual runtime helper handshake. Save/restart are explicit (default false). |
+| 33 | `stop_game` | Stop the specified run, release injected input, and confirm process termination. |
+| 34 | `send_input` | Send timestamped key/mouse/touch/action events through Godot input. Optionally observe a condition and capture afterward. Capture URI enables conversion from image coordinates. |
+| 35 | `inspect_debugger` | Read suspended DAP stack/scopes/variables; frame handles become stale on continue. GDScript is supported. |
+| 36 | `set_breakpoints` | Add/remove MCP-owned breakpoints while preserving user breakpoints. replace=true replaces only MCP-owned entries. |
+| 37 | `debug_control` | Pause, continue, step over or step into GDScript. step_out reports unsupported on Godot 4.7.2. |
+| 38 | `get_settings` | Read project settings, input mappings and autoloads with property metadata. |
+| 39 | `get_export_presets` | Read actual preset names/platforms and installed export-template readiness. |
+| 40 | `import_assets` | Copy local assets or reimport project assets with options, wait for Godot import, and report resource references and persistence risks. |
+| 41 | `move_assets` | Move project files with UID sidecars and reconcile serialized dependencies. Reject unsaved documents and report dynamic references needing review. |
+| 42 | `update_settings` | Apply project settings/input actions/autoload changes with undo; save project.godot explicitly to persist. |
+| 43 | `export_build` | Export with a real Godot preset via CLI and verify the output exists. Export success does not imply artifact execution. |
 
 ## Full input schemas
 
 <details>
-<summary>1. <code>get_context</code></summary>
+<summary>1. <code>install_plugin</code></summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "project": {
+      "description": "Required absolute path to the directory containing project.godot.",
+      "maxLength": 4096,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "project"
+  ],
+  "type": "object"
+}
+```
+
+</details>
+
+<details>
+<summary>2. <code>get_context</code></summary>
 
 ```json
 {
@@ -79,7 +103,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>2. <code>find_assets</code></summary>
+<summary>3. <code>find_assets</code></summary>
 
 ```json
 {
@@ -133,7 +157,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>3. <code>get_class_info</code></summary>
+<summary>4. <code>get_class_info</code></summary>
 
 ```json
 {
@@ -165,7 +189,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>4. <code>get_scene</code></summary>
+<summary>5. <code>get_scene</code></summary>
 
 ```json
 {
@@ -211,7 +235,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>5. <code>open_scene</code></summary>
+<summary>6. <code>open_scene</code></summary>
 
 ```json
 {
@@ -238,7 +262,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>6. <code>create_scene</code></summary>
+<summary>7. <code>create_scene</code></summary>
 
 ```json
 {
@@ -281,7 +305,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>7. <code>create_nodes</code></summary>
+<summary>8. <code>create_nodes</code></summary>
 
 ```json
 {
@@ -417,7 +441,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>8. <code>update_nodes</code></summary>
+<summary>9. <code>update_nodes</code></summary>
 
 ```json
 {
@@ -515,7 +539,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>9. <code>delete_nodes</code></summary>
+<summary>10. <code>delete_nodes</code></summary>
 
 ```json
 {
@@ -563,7 +587,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>10. <code>save_documents</code></summary>
+<summary>11. <code>save_documents</code></summary>
 
 ```json
 {
@@ -602,7 +626,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>11. <code>undo_edit</code></summary>
+<summary>12. <code>undo_edit</code></summary>
 
 ```json
 {
@@ -629,7 +653,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>12. <code>get_resource</code></summary>
+<summary>13. <code>get_resource</code></summary>
 
 ```json
 {
@@ -716,7 +740,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>13. <code>create_resource</code></summary>
+<summary>14. <code>create_resource</code></summary>
 
 ```json
 {
@@ -791,7 +815,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>14. <code>update_resource</code></summary>
+<summary>15. <code>update_resource</code></summary>
 
 ```json
 {
@@ -884,7 +908,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>15. <code>read_script</code></summary>
+<summary>16. <code>read_script</code></summary>
 
 ```json
 {
@@ -966,7 +990,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>16. <code>create_script</code></summary>
+<summary>17. <code>create_script</code></summary>
 
 ```json
 {
@@ -1074,7 +1098,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>17. <code>edit_script</code></summary>
+<summary>18. <code>edit_script</code></summary>
 
 ```json
 {
@@ -1177,7 +1201,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>18. <code>update_signals</code></summary>
+<summary>19. <code>update_signals</code></summary>
 
 ```json
 {
@@ -1351,7 +1375,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>19. <code>get_animation</code></summary>
+<summary>20. <code>get_animation</code></summary>
 
 ```json
 {
@@ -1399,7 +1423,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>20. <code>edit_animation</code></summary>
+<summary>21. <code>edit_animation</code></summary>
 
 ```json
 {
@@ -1560,7 +1584,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>21. <code>edit_animation_graph</code></summary>
+<summary>22. <code>edit_animation_graph</code></summary>
 
 ```json
 {
@@ -1847,7 +1871,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>22. <code>preview_animation</code></summary>
+<summary>23. <code>preview_animation</code></summary>
 
 ```json
 {
@@ -1911,7 +1935,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>23. <code>get_tilemap</code></summary>
+<summary>24. <code>get_tilemap</code></summary>
 
 ```json
 {
@@ -2009,7 +2033,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>24. <code>edit_tileset</code></summary>
+<summary>25. <code>edit_tileset</code></summary>
 
 ```json
 {
@@ -2296,7 +2320,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>25. <code>paint_tiles</code></summary>
+<summary>26. <code>paint_tiles</code></summary>
 
 ```json
 {
@@ -2663,7 +2687,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>26. <code>inspect_runtime</code></summary>
+<summary>27. <code>inspect_runtime</code></summary>
 
 ```json
 {
@@ -2720,7 +2744,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>27. <code>capture_viewport</code></summary>
+<summary>28. <code>capture_viewport</code></summary>
 
 ```json
 {
@@ -2829,7 +2853,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>28. <code>wait_for_condition</code></summary>
+<summary>29. <code>wait_for_condition</code></summary>
 
 ```json
 {
@@ -2998,7 +3022,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>29. <code>get_diagnostics</code></summary>
+<summary>30. <code>get_diagnostics</code></summary>
 
 ```json
 {
@@ -3061,7 +3085,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>30. <code>sample_performance</code></summary>
+<summary>31. <code>sample_performance</code></summary>
 
 ```json
 {
@@ -3113,7 +3137,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>31. <code>run_scene</code></summary>
+<summary>32. <code>run_scene</code></summary>
 
 ```json
 {
@@ -3144,7 +3168,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>32. <code>stop_game</code></summary>
+<summary>33. <code>stop_game</code></summary>
 
 ```json
 {
@@ -3171,7 +3195,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>33. <code>send_input</code></summary>
+<summary>34. <code>send_input</code></summary>
 
 ```json
 {
@@ -3548,7 +3572,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>34. <code>inspect_debugger</code></summary>
+<summary>35. <code>inspect_debugger</code></summary>
 
 ```json
 {
@@ -3590,7 +3614,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>35. <code>set_breakpoints</code></summary>
+<summary>36. <code>set_breakpoints</code></summary>
 
 ```json
 {
@@ -3643,7 +3667,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>36. <code>debug_control</code></summary>
+<summary>37. <code>debug_control</code></summary>
 
 ```json
 {
@@ -3686,7 +3710,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>37. <code>get_settings</code></summary>
+<summary>38. <code>get_settings</code></summary>
 
 ```json
 {
@@ -3729,7 +3753,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>38. <code>get_export_presets</code></summary>
+<summary>39. <code>get_export_presets</code></summary>
 
 ```json
 {
@@ -3759,7 +3783,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>39. <code>import_assets</code></summary>
+<summary>40. <code>import_assets</code></summary>
 
 ```json
 {
@@ -3815,7 +3839,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>40. <code>move_assets</code></summary>
+<summary>41. <code>move_assets</code></summary>
 
 ```json
 {
@@ -3862,7 +3886,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>41. <code>update_settings</code></summary>
+<summary>42. <code>update_settings</code></summary>
 
 ```json
 {
@@ -4012,7 +4036,7 @@ Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 202
 </details>
 
 <details>
-<summary>42. <code>export_build</code></summary>
+<summary>43. <code>export_build</code></summary>
 
 ```json
 {

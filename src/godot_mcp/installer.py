@@ -18,7 +18,7 @@ from pathlib import Path
 
 import psutil
 
-from .bootstrap import installation_environment, probe_godot, resolve_godot
+from .bootstrap import installation_environment
 from .version import ENGINE_VERSION, PRODUCT_VERSION
 
 
@@ -72,10 +72,6 @@ def enable_plugin(source: str) -> str:
         replacement = 'enabled=PackedStringArray(' + ', '.join(json.dumps(v) for v in values) + ')'
         body = body[:enabled.start()] + replacement + body[enabled.end():]
     return source[:start] + body + source[end:]
-
-
-def check_godot(command: str) -> str:
-    return probe_godot(command, ENGINE_VERSION)[1]
 
 
 def prepare_environment(source: Path, home: Path, repair: bool = False) -> tuple[Path, Path]:
@@ -202,6 +198,23 @@ def install_project(project: Path, executable: Path, home: Path) -> dict:
         raise
 
 
+def initialize_project(project: Path, home: Path) -> dict:
+    """Install this server's bundled plugin without requiring an editor connection."""
+    project = project.expanduser().resolve()
+    home = home.expanduser().resolve()
+    if not (project / 'project.godot').is_file():
+        raise ValueError(f'project.godot not found in {project}')
+    active = json.loads((home / 'active.json').read_text())
+    if not isinstance(active, dict) or active.get('version') != PRODUCT_VERSION:
+        raise ValueError('The active installation differs from this server. Restart MCP with the current executable.')
+    executable = Path(active.get('executable', ''))
+    if not executable.is_absolute() or not executable.is_file():
+        raise ValueError('The active server executable is missing; reinstall the server first.')
+    result = install_project(project, executable, home)
+    result['next_step'] = 'Open or reopen this project in Godot, then call get_context.'
+    return result
+
+
 def install_global(executable: Path, home: Path, project: Path | None = None) -> dict:
     """Activate a tested environment, refresh linked plugins atomically."""
     home.mkdir(parents=True, exist_ok=True)
@@ -272,7 +285,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--project', type=Path)
     parser.add_argument('--source', type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument('--home', type=Path, default=default_home())
-    parser.add_argument('--godot')
     parser.add_argument('--yes', action='store_true', help='accept explicit/default values without prompts')
     parser.add_argument('--repair', action='store_true', help='prepare a fresh environment even if this version is installed')
     parser.add_argument('--plugin-only', action='store_true', help='reuse this installed executable; no environment preparation')
@@ -282,8 +294,6 @@ def main(argv: list[str] | None = None) -> int:
         if args.rollback:
             print(json.dumps(rollback(args.rollback), indent=2))
             return 0
-        args.godot, _ = resolve_godot(args.godot, expected=ENGINE_VERSION, interactive=not args.yes)
-        print(f'Godot: {args.godot} ({ENGINE_VERSION})')
         if not args.yes:
             # /dev/tty supports curl | sh; stdin supports explicitly piped answers.
             with contextlib.ExitStack() as stack:
@@ -300,7 +310,7 @@ def main(argv: list[str] | None = None) -> int:
                 chosen_project = ask('Project to link now, or later', args.project or 'later')
                 args.project = None if chosen_project.lower() == 'later' else Path(chosen_project).expanduser()
                 args.home = Path(ask('Installation directory', args.home)).expanduser()
-                print(f'Install {PRODUCT_VERSION} for Godot {ENGINE_VERSION} on {platform.system()} {platform.machine()}\nGodot: {args.godot}\nProject: {args.project}\nLocation: {args.home}')
+                print(f'Install {PRODUCT_VERSION} for Godot {ENGINE_VERSION} on {platform.system()} {platform.machine()}\nProject: {args.project}\nLocation: {args.home}')
                 if ask('Continue? (yes/no)', 'yes').lower() not in ('y', 'yes'):
                     print('Cancelled; no changes made.')
                     return 0
@@ -310,7 +320,6 @@ def main(argv: list[str] | None = None) -> int:
             args.project = args.project.resolve()
         if args.plugin_only and args.project is None:
             raise ValueError('--plugin-only requires --project.')
-        check_godot(args.godot)
         args.home = args.home.expanduser().resolve()
         if args.plugin_only:
             executable = executable_at(Path(sys.prefix))

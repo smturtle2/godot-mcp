@@ -93,6 +93,7 @@ def tool(name, description, properties, required=(), *, read=False, destructive=
 
 
 TOOL_SPECS = [
+    tool("install_plugin", "Install and enable the bundled plugin in an existing Godot project before connecting to the editor. Close the project in Godot first. Creates a rollback backup and registers project discovery.", {"project": {**S, "description": "Required absolute path to the directory containing project.godot."}}, ("project",)),
     tool("get_context", "Read project/engine/product/protocol versions, active scene, selection, unsaved documents and actual run state.", {"scope": enum("all", "project", "editor", "runtime")}, read=True),
     tool("find_assets", "Search filenames, source text or symbols. Returns reusable res:// URIs and one-based source locations.", {"query": S, "mode": enum("name", "text", "symbol"), "types": arr(S, 32), "scope": {"type": "string", "pattern": "^res://"}, "limit": integer(1, 500)}, ("query",), read=True),
     tool("get_class_info", "Inspect actual engine or project script classes, properties, methods and signals; optionally filter a member.", {"class": S, "member": S}, ("class",), read=True),
@@ -137,4 +138,4 @@ TOOL_SPECS = [
     tool("export_build", "Export with a real Godot preset via CLI and verify the output exists. Export success does not imply artifact execution.", {"preset": S, "output": FILE, "debug": B, "timeout_ms": integer(1000, 180000)}, ("preset", "output")),
 ]
 SPECS = {spec["name"]: spec for spec in TOOL_SPECS}
-assert len(SPECS) == len(TOOL_SPECS) == 42
+assert len(SPECS) == len(TOOL_SPECS) == 43

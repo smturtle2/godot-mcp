@@ -1,6 +1,7 @@
 """Official MCP SDK server; the editor remains the source of project state."""
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 from contextlib import asynccontextmanager
@@ -17,12 +18,13 @@ from .version import PRODUCT_VERSION
 
 
 def create_server(project: Path | None = None, bridge: EditorBridge | None = None, *, home: Path | None = None) -> Server:
+    from .installer import default_home, initialize_project
+    install_home = home or default_home()
     fixed_bridge = bridge or (EditorBridge(project) if project else None)
     directory = None
     if fixed_bridge is None:
         from .discovery import EditorDirectory
-        from .installer import default_home
-        directory = EditorDirectory(home or default_home())
+        directory = EditorDirectory(install_home)
     validators = {name: Draft202012Validator(spec["inputSchema"]) for name, spec in SPECS.items()}
     debuggers = {}
     selected_project: str | None = None
@@ -45,6 +47,17 @@ def create_server(project: Path | None = None, bridge: EditorBridge | None = Non
             error = next(validators[params.name].iter_errors(arguments), None)
             if error:
                 raise ToolError("INVALID_ARGUMENT", error.message, {"path": list(error.absolute_path)})
+            if params.name == "install_plugin":
+                target = Path(arguments["project"])
+                if not target.is_absolute():
+                    raise ToolError("INVALID_ARGUMENT", "project must be an absolute path.")
+                if fixed_bridge and target.resolve() != fixed_bridge.project:
+                    raise ToolError("PROJECT_MISMATCH", "This dedicated server is bound to a different project.")
+                try:
+                    result = await asyncio.to_thread(initialize_project, target, install_home)
+                except (OSError, ValueError) as exc:
+                    raise ToolError("INSTALL_FAILED", str(exc)) from exc
+                return types.CallToolResult(content=[types.TextContent(type="text", text=json.dumps(result))], structured_content=result)
             selector = arguments.pop("project", None)
             if directory and params.name == "get_context" and not selector and not selected_project and len(directory.projects()) != 1:
                 result = directory.context()
@@ -87,7 +100,7 @@ def create_server(project: Path | None = None, bridge: EditorBridge | None = Non
 
     return Server("Godot MCP", version=PRODUCT_VERSION, on_list_tools=list_tools,
                   on_call_tool=call_tool, lifespan=lifespan,
-                  instructions="Call get_context first. When several projects are open, select an absolute project path. Use live scene/resource references for editor edits and current run_id for gameplay. Save explicitly before play. After timeout inspect state before retrying a mutation. Tool errors describe recoverable conditions.")
+                  instructions="For a project without the plugin, call install_plugin with its absolute path while Godot is closed, then ask the user to open it. Call get_context first for editor work. When several projects are open, select an absolute project path. Use live scene/resource references for editor edits and current run_id for gameplay. Save explicitly before play. After timeout inspect state before retrying a mutation. Tool errors describe recoverable conditions.")
 
 
 async def serve(project: Path | None = None, *, home: Path | None = None) -> None:
