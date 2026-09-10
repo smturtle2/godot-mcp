@@ -20,7 +20,7 @@ PLATFORMS = [
     "macos-aarch64",
     "windows-x86_64",
 ]
-INCLUDE = ("README.md", "LICENSE", "CHANGELOG.md", ".github", ".gitignore", "pyproject.toml", "uv.lock", ".python-version", "install.sh", "install.ps1", "docs", "scripts", "src", "tests")
+INCLUDE = ("README.md", "README.ko.md", "LICENSE", "CHANGELOG.md", ".github", ".gitignore", "pyproject.toml", "uv.lock", ".python-version", "install.sh", "install.ps1", "docs", "scripts", "src", "tests")
 EXCLUDE_PARTS = {".git", ".venv", ".pytest_cache", ".ruff_cache", "__pycache__", ".mypy_cache"}
 
 

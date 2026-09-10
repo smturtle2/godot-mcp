@@ -1,9 +1,9 @@
-# v4.7.2_5
+# v4.7.2_6
 
 - Install a stable user command and register its directory on the user's shell PATH. The command follows the active installation, so server updates keep the same CLI and MCP executable path.
 - Keep MCP client configuration and process ownership with the client. Print the stable absolute stdio command for GUI clients.
 - Add `--no-modify-path` for isolated or managed installations; command creation and rollback remain inside the installation home.
-- Rewrite the getting-started instructions around `godot-mcp init` and add the Korean `README.ko.md`.
+- Rewrite the getting-started instructions around `godot-mcp init` and include the Korean `README.ko.md` in the repository and release archive.
 
 # v4.7.2_4
 
