@@ -107,6 +107,7 @@ def prepare_environment(source: Path, home: Path, repair: bool = False) -> tuple
         shutil.copytree(source, package, ignore=shutil.ignore_patterns('.git', '.venv', '__pycache__', '.pytest_cache', '.ruff_cache', 'dist', '.godot', '.godot-mcp'))
         environment = version_dir / 'environment'
         env = dict(os.environ, UV_PROJECT_ENVIRONMENT=str(environment))
+        env.pop('VIRTUAL_ENV', None)
         subprocess.run([uv, 'sync', '--project', str(package), '--frozen', '--no-dev', '--no-editable', '--python', '3.13'], env=env, check=True)
         executable = executable_at(environment)
         result = subprocess.run([str(executable), 'version'], capture_output=True, text=True, check=True)

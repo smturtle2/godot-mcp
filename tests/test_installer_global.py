@@ -77,4 +77,3 @@ def test_global_install_rejects_non_object_client_json_without_mutation(tmp_path
     with pytest.raises(ValueError):
         installer.install_global(tmp_path / "server", home, config=config)
     assert config.read_text() == "[]"
-
