@@ -36,7 +36,7 @@ def parser() -> argparse.ArgumentParser:
     init_parser.add_argument("--home", type=Path, default=default_home())
     connect_parser = sub.add_parser("connect", help="serve MCP over stdio with project discovery")
     connect_parser.add_argument("--home", type=Path, default=default_home())
-    install_parser = sub.add_parser("install", help="run the interactive installer")
+    install_parser = sub.add_parser("install", help="install or update the server")
     install_parser.add_argument("installer_args", nargs=argparse.REMAINDER)
     return p
 

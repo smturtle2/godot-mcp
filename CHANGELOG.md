@@ -1,3 +1,9 @@
+# v4.7.2_7
+
+- Make installation unattended by default: use the standard user directory without project, path, or confirmation prompts. Keep `--home` and `--project` as explicit options and accept legacy `--yes` for compatibility.
+- Present a compact three-step terminal status and ready-to-use commands. Color is limited to interactive terminals, with plain output for logs and `NO_COLOR`.
+- Keep routine dependency output quiet while preserving subprocess error details on failure.
+
 # v4.7.2_6
 
 - Install a stable user command and register its directory on the user's shell PATH. The command follows the active installation, so server updates keep the same CLI and MCP executable path.

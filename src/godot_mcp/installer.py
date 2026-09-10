@@ -3,11 +3,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import contextlib
 import hashlib
 import json
 import os
-import platform
 import re
 import shutil
 import subprocess
@@ -18,6 +16,7 @@ from pathlib import Path
 
 import psutil
 
+from . import presentation
 from .bootstrap import installation_environment
 from .version import ENGINE_VERSION, PRODUCT_VERSION
 
@@ -103,7 +102,7 @@ def prepare_environment(source: Path, home: Path, repair: bool = False) -> tuple
         shutil.copytree(source, package, ignore=shutil.ignore_patterns('.git', '.venv', '__pycache__', '.pytest_cache', '.ruff_cache', 'dist', '.godot', '.godot-mcp'))
         environment = version_dir / 'environment'
         env = installation_environment(environment)
-        subprocess.run([uv, 'sync', '--project', str(package), '--frozen', '--no-dev', '--no-editable', '--python', '3.13', '--link-mode', 'copy'], env=env, check=True)
+        subprocess.run([uv, 'sync', '--project', str(package), '--frozen', '--no-dev', '--no-editable', '--python', '3.13', '--link-mode', 'copy'], env=env, capture_output=True, text=True, check=True)
         executable = executable_at(environment)
         result = subprocess.run([str(executable), 'version'], capture_output=True, text=True, check=True)
         if PRODUCT_VERSION not in result.stdout:
@@ -323,7 +322,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--project', type=Path)
     parser.add_argument('--source', type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument('--home', type=Path, default=default_home())
-    parser.add_argument('--yes', action='store_true', help='accept explicit/default values without prompts')
+    parser.add_argument('--yes', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--no-modify-path', action='store_true', help='install the stable command without changing shell PATH')
     parser.add_argument('--repair', action='store_true', help='prepare a fresh environment even if this version is installed')
     parser.add_argument('--plugin-only', action='store_true', help='reuse this installed executable; no environment preparation')
@@ -333,26 +332,6 @@ def main(argv: list[str] | None = None) -> int:
         if args.rollback:
             print(json.dumps(rollback(args.rollback), indent=2))
             return 0
-        if not args.yes:
-            # /dev/tty supports curl | sh; stdin supports explicitly piped answers.
-            with contextlib.ExitStack() as stack:
-                terminal = sys.stdin
-                if not sys.stdin.isatty() and os.name != 'nt':
-                    with contextlib.suppress(OSError):
-                        terminal = stack.enter_context(open('/dev/tty', encoding='utf-8'))
-                def ask(label, default):
-                    print(f'{label} [{default}]: ', end='', flush=True)
-                    line = terminal.readline()
-                    if not line:
-                        raise ValueError('No interactive input. Use --yes for non-interactive installation.')
-                    return line.strip() or str(default)
-                chosen_project = ask('Project to link now, or later', args.project or 'later')
-                args.project = None if chosen_project.lower() == 'later' else Path(chosen_project).expanduser()
-                args.home = Path(ask('Installation directory', args.home)).expanduser()
-                print(f'Install {PRODUCT_VERSION} for Godot {ENGINE_VERSION} on {platform.system()} {platform.machine()}\nProject: {args.project}\nLocation: {args.home}')
-                if ask('Continue? (yes/no)', 'yes').lower() not in ('y', 'yes'):
-                    print('Cancelled; no changes made.')
-                    return 0
         if args.project is not None:
             if not (args.project / 'project.godot').is_file():
                 raise ValueError('--project must contain project.godot.')
@@ -365,6 +344,8 @@ def main(argv: list[str] | None = None) -> int:
             if not executable.is_file():
                 raise ValueError('Current environment has no godot-mcp executable.')
         else:
+            presentation.heading(f'Godot MCP {PRODUCT_VERSION}')
+            presentation.step(1, 'Preparing the server environment')
             executable, _ = prepare_environment(args.source.resolve(), args.home, args.repair)
         if args.plugin_only:
             active_file = args.home / 'active.json'
@@ -377,21 +358,21 @@ def main(argv: list[str] | None = None) -> int:
             print(f'Linked {args.project}. Open it in Godot {ENGINE_VERSION}.')
             print(f'Rollback: "{executable}" install --rollback "{record["backup"]}"')
         else:
-            record = install_global(executable, args.home, args.project)
-            print(f'Installed {PRODUCT_VERSION} for this user.')
+            presentation.step(2, 'Activating the server and linked plugins')
+            install_global(executable, args.home, args.project)
             command = launcher_at(args.home)
-            executable = command
-            print(f'Stdio command: "{command}" connect')
+            presentation.step(3, 'Registering the godot-mcp command')
+            path_status = 'Use the absolute command below; PATH changes were disabled.'
             if not args.no_modify_path:
                 from .command_path import register_path
-                print(register_path(command.parent))
-            print('Connection registration and process launch belong to your MCP client.')
-            print('Link another project: godot-mcp init [PROJECT]')
-            print(f'Rollback: "{executable}" install --rollback "{record["backup"]}"')
-        if args.project:
-            print(f'Open {args.project} in Godot {ENGINE_VERSION}; then run "{executable}" check --project "{args.project}".')
-        print('Installation is complete; editor connection is verified separately.')
+                path_status = register_path(command.parent)
+            presentation.success(command, path_status, args.project)
         return 0
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
-        print(f'Installation failed: {exc}', file=sys.stderr)
+        detail = str(exc)
+        if isinstance(exc, subprocess.CalledProcessError):
+            output = exc.stderr or exc.stdout
+            if output:
+                detail += '\n' + (output.decode(errors='replace') if isinstance(output, bytes) else output).strip()
+        presentation.failure(detail)
         return 1

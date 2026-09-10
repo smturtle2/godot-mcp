@@ -36,7 +36,7 @@ Windows PowerShell:
 irm https://raw.githubusercontent.com/smturtle2/godot-mcp/main/install.ps1 | iex
 ```
 
-The public installer fetches the latest stable release. It does not detect or ask for a Godot executable or engine version. It installs a user-local stable `godot-mcp` command and adds its directory to your user shell `PATH`; open a new terminal before using that command.
+The public installer fetches the latest stable release and installs it in the default user directory without asking questions. It does not detect or ask for a Godot executable or engine version. It installs a user-local stable `godot-mcp` command and adds its directory to your user shell `PATH`; open a new terminal before using that command.
 
 The installer prints a fixed absolute stdio command for MCP client setup. GUI MCP clients should use that printed command because their `PATH` may differ from your shell. The client launches the server; the installer does not write client configuration.
 

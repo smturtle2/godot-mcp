@@ -93,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError('uv is required. Run install.sh/install.ps1 or install uv first.')
         if args.source:
             source = args.source.resolve()
-            return subprocess.call([uv, 'run', '--project', str(source), '--frozen', '--no-dev', '--link-mode', 'copy', 'godot-mcp', 'install', '--source', str(source), *remaining], env=installation_environment())
+            return subprocess.call([uv, 'run', '--quiet', '--project', str(source), '--frozen', '--no-dev', '--link-mode', 'copy', 'godot-mcp', 'install', '--source', str(source), *remaining], env=installation_environment())
         release = json.loads(fetch(API + '/latest', 5 * 1024 * 1024))
         engine = validate_release(release)
         manifest_asset = next((a for a in release['assets'] if a['name'] == 'manifest.json'), None)
@@ -112,7 +112,7 @@ def main(argv: list[str] | None = None) -> int:
         with tempfile.TemporaryDirectory(prefix='godot-mcp-install-') as directory:
             source = safe_extract(data, Path(directory))
             # Both the bootstrap environment and final installation honor the release lock.
-            return subprocess.call([uv, 'run', '--project', str(source), '--frozen', '--no-dev', '--link-mode', 'copy', 'godot-mcp', 'install', '--source', str(source), *remaining], env=installation_environment())
+            return subprocess.call([uv, 'run', '--quiet', '--project', str(source), '--frozen', '--no-dev', '--link-mode', 'copy', 'godot-mcp', 'install', '--source', str(source), *remaining], env=installation_environment())
     except (OSError, ValueError, KeyError, StopIteration, subprocess.SubprocessError, zipfile.BadZipFile) as exc:
         print(f'Installation failed: {exc}', file=sys.stderr)
         return 1

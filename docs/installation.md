@@ -4,6 +4,8 @@
 
 ## Install the server
 
+Installation uses the default user directory without prompts. Use `--home PATH` only to choose another location, or `--project PATH` to link a project during installation. These options are optional.
+
 Linux/macOS:
 
 ```sh

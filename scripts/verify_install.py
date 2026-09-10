@@ -82,7 +82,7 @@ def verify(source: Path, godot: str, work_dir: Path | None) -> dict:
         installer_env = dict(os.environ, PYTHONPATH=str(source / "src"))
         clean_env = dict(os.environ)
         clean_env.pop("PYTHONPATH", None)
-        installer = [sys.executable, "-m", "godot_mcp.cli", "install", "--yes", "--source", str(source),
+        installer = [sys.executable, "-m", "godot_mcp.cli", "install", "--source", str(source),
                      "--home", str(home), "--no-modify-path"]
         first = run(installer, cwd=source, env=installer_env, timeout=90)
         executable = installed_executable(home)
