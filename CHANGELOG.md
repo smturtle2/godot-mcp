@@ -1,3 +1,8 @@
+# v4.7.2_8
+
+- Skip NUL when escaping response control characters, avoiding Godot's `String.chr(0)` error on every MCP request.
+- Add an editor integration regression check for unexpected NUL diagnostics.
+
 # v4.7.2_7
 
 - Make installation unattended by default: use the standard user directory without project, path, or confirmation prompts. Keep `--home` and `--project` as explicit options and accept legacy `--yes` for compatibility.

@@ -186,7 +186,8 @@ func _respond(peer: WebSocketPeer, id: Variant, result: Dictionary) -> void:
 		response.result = result
 	var payload: String = JSON.stringify(response)
 	# Godot leaves some control bytes (notably ANSI ESC from logs) literal.
-	for code: int in range(32):
+	# String.chr(0) is invalid in Godot.
+	for code: int in range(1, 32):
 		payload = payload.replace(String.chr(code), "\\u%04x" % code)
 	peer.send_text(payload)
 

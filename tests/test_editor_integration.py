@@ -80,6 +80,8 @@ async def test_editor_authoring(editor):
         assert len((await client.list_tools()).tools) == 43
         result = await client.call_tool('get_context', {})
         assert not result.is_error
+    diagnostics = await call(b, 'get_diagnostics')
+    assert not any('Unexpected NUL character' in entry['message'] for entry in diagnostics['entries']), diagnostics
     r = await call(b, 'create_nodes', parent=ref(), nodes=[{'name': n, 'class': c} for n, c in [('Sprite', 'Sprite2D'), ('Anim', 'AnimationPlayer'), ('Tree', 'AnimationTree'), ('Tiles', 'TileMapLayer')]])
     assert len(r['nodes']) == 4
     r = await call(b, 'update_nodes', changes=[{'node': ref('Sprite'), 'set': {'position': vector(12, 34)}}])
