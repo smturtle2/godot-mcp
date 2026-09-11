@@ -41,6 +41,10 @@ func _breaked(_can_debug: bool, session_id: int) -> void:
 func _continued(session_id: int) -> void:
 	if session_id == active_session: pause_id = ""
 
+func has_session() -> bool:
+	# A closed transport still owns its session until stopped is delivered.
+	return active_session >= 0
+
 func state() -> Dictionary:
 	var session: EditorDebuggerSession = get_session(active_session) if active_session >= 0 else null
 	return {"active": session != null and session.is_active(), "paused": session != null and session.is_breaked(), "debuggable": session != null and session.is_debuggable(), "pause_id": pause_id, "run_id": host.runtime.run_id if host.runtime else "", "session_id": active_session}

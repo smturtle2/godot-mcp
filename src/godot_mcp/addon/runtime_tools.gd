@@ -129,7 +129,7 @@ func run_scene(p: Dictionary) -> Dictionary:
 		if not saved.complete: return host.fail("SAVE_FAILED", "Some explicitly requested documents could not be saved before running.", saved)
 	guard = _guard_revisions(p.get("revisions", {}))
 	if not guard.is_empty(): return guard
-	if EditorInterface.is_playing_scene() or host.debugger.state().active:
+	if EditorInterface.is_playing_scene() or host.debugger.has_session():
 		var stopped: Dictionary = await stop_game({"run_id": run_id})
 		if stopped.has("error") or not stopped.get("stopped", false): return stopped
 	guard = _guard_revisions(p.get("revisions", {}))
@@ -163,17 +163,17 @@ func run_scene(p: Dictionary) -> Dictionary:
 
 func stop_game(p: Dictionary) -> Dictionary:
 	if p.get("run_id", "") != run_id: return host.fail("STALE_RUN", "Cannot stop a different run.")
-	if not EditorInterface.is_playing_scene() and not host.debugger.state().active:
+	if not EditorInterface.is_playing_scene() and not host.debugger.has_session():
 		ready = false
 		return {"run_id": run_id, "stopped": true, "input_released": true}
 	if ready and not host.debugger.state().paused: await host.debugger.request("release_input", {})
 	EditorInterface.stop_playing_scene()
 	await host.get_tree().process_frame
 	var deadline: int = Time.get_ticks_msec() + 5000
-	# The playing flag can clear before the debugger stop is delivered. Starting
-	# again in that gap can cancel the new launch with the previous stop event.
-	while (EditorInterface.is_playing_scene() or host.debugger.state().active) and Time.get_ticks_msec() < deadline: await host.get_tree().process_frame
-	var stopped: bool = not EditorInterface.is_playing_scene() and not host.debugger.state().active
+	# Both the playing flag and socket can clear before the session's stopped
+	# signal. Native handling of that signal must finish before a new launch.
+	while (EditorInterface.is_playing_scene() or host.debugger.has_session()) and Time.get_ticks_msec() < deadline: await host.get_tree().process_frame
+	var stopped: bool = not EditorInterface.is_playing_scene() and not host.debugger.has_session()
 	if stopped: ready = false
 	return {"run_id": run_id, "stopped": stopped, "input_released": stopped}
 
