@@ -15,12 +15,14 @@ from .bridge import EditorBridge, ToolError, validate_values
 from .catalog import SPECS, TOOL_SPECS
 from .input_validation import validate_arguments
 from .result_projection import project_result
+from .source_tools import SourceTools
 from .version import PRODUCT_VERSION
 
 SERVER_INSTRUCTIONS = (
     "For editor work, call get_context first; select an absolute project. Prefer MCP for live edits. "
-    "Use live refs and current run_id. Check revisions; save before play. After a mutation timeout, "
-    "inspect state before retrying. For direct edits, check unsaved state, then reload and validate. "
+    "Use live refs and current run_id. Read sources with read_scripts, then apply_script_changes with its base_revisions. "
+    "Save explicitly before play. For pending work, query get_operation_result; never replay a mutation to wait. "
+    "After a timeout without an operation ID, inspect state before retrying. For direct edits, check unsaved state, then reload and validate. "
     "Godot values use $type and named fields. Pass these rules to delegates."
 )
 
@@ -43,7 +45,8 @@ def _tool_result(name: str, result: dict, *, project: str | None = None) -> type
                 extract(child)
 
     extract(result)
-    incomplete = "error" in result or result.get("status") in {"partial", "failed"} or result.get("complete") is False
+    incomplete = ("error" in result or result.get("status") in {"partial", "failed"}
+                  or (result.get("complete") is False and result.get("status") != "pending"))
     return types.CallToolResult(
         content=[types.TextContent(type="text", text=json.dumps(result, ensure_ascii=False, separators=(",", ":"))), *images],
         structured_content=result, is_error=incomplete,
@@ -98,7 +101,9 @@ def create_server(project: Path | None = None, bridge: EditorBridge | None = Non
             if fixed_bridge and selector and Path(selector).resolve() != active_project:
                 raise ToolError("PROJECT_MISMATCH", "This dedicated server is bound to a different project.")
             validate_values(active_project, arguments)
-            if params.name in ("inspect_debugger", "set_breakpoints", "debug_control"):
+            if params.name in {"apply_script_changes", "resume_script_changes", "get_diagnostics", "get_operation_result"}:
+                result = await SourceTools(active_bridge).call(params.name, arguments)
+            elif params.name in ("inspect_debugger", "set_breakpoints", "debug_control"):
                 if active_project not in debuggers:
                     from .debugger import DebugTools
                     debuggers[active_project] = DebugTools(active_bridge)

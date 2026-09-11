@@ -11,8 +11,7 @@ from pathlib import Path
 
 from godot_mcp.catalog import SPECS
 
-TOOLS = ("send_input", "wait_for_condition", "edit_tileset", "edit_animation", "create_nodes",
-         "get_resource", "update_resource", "apply_script_changes", "edit_script", "get_operation_result")
+TOOLS = tuple(SPECS)
 
 
 def extract_declaration(payload: list[dict], tool_name: str) -> str:

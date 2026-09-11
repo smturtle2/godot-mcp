@@ -44,7 +44,7 @@ def test_representative_nested_scene_and_animation_inputs_validate():
 
 def test_unknown_args_traversal_invalid_revision_and_duration_are_rejected():
     assert_invalid("get_context", {"scope": "all", "unexpected": True})
-    assert_invalid("edit_script", {"change": {"replace": {"uri": "res://main.gd", "if_revision": "", "source": "x"}}})
+    assert_invalid("apply_script_changes", {"patch": "x", "changes": []})
     assert_invalid("wait_for_condition", {"run_id": "r", "condition": {"scene": {"uri": "res://main.tscn"}}, "timeout_ms": -1})
     assert_invalid("export_build", {"preset": "linux", "output": "file:///tmp/a", "timeout_ms": -1})
     assert_invalid("send_input", {"run_id": "r", "events": [{"at_ms": 60001, "event": {"key": {"key": "A", "pressed": True}}}]})
@@ -69,7 +69,6 @@ def test_get_scene_include_and_update_settings_event_kinds():
 
 def test_named_choice_contracts_expose_structural_cardinality():
     for name, field, choices in [
-        ("apply_script_changes", "changes", {"create", "replace", "edit"}),
         ("send_input", "event", {"key", "mouse_button", "mouse_motion", "touch", "drag", "action"}),
         ("wait_for_condition", "condition", {"scene", "node", "property", "signal"}),
         ("create_nodes", "source", {"class", "instance", "duplicate"}),
@@ -81,7 +80,7 @@ def test_named_choice_contracts_expose_structural_cardinality():
             item = schema["properties"]["events"]["items"]["properties"][field]
         elif name == "create_nodes":
             item = schema["properties"]["nodes"]["items"]["properties"][field]
-        elif name in {"apply_script_changes", "edit_animation", "edit_tileset"}:
+        elif name in {"edit_animation", "edit_tileset"}:
             item = schema["properties"][field]["items"]
         else:
             item = schema["properties"][field]
@@ -91,16 +90,22 @@ def test_named_choice_contracts_expose_structural_cardinality():
 
 
 def test_output_contracts_remain_explicit_unions_with_required_fields():
-    for name in ("create_script", "edit_script", "apply_script_changes", "save_documents", "send_input"):
+    for name in ("resume_script_changes", "save_documents", "send_input"):
         output = SPECS[name]["outputSchema"]
         assert output["type"] == "object"
         assert len(output["oneOf"]) == 2
         assert output["oneOf"][0]["required"]
         assert output["oneOf"][1]["required"] == ["error"]
+    patch_output = SPECS["apply_script_changes"]["outputSchema"]
+    assert len(patch_output["oneOf"]) == 3
+    assert patch_output["oneOf"][0]["required"]
+    assert patch_output["oneOf"][1]["required"] == ["error"]
 
 
 def test_diagnostic_timestamps_use_safe_integer_range():
     entry = {"entries": [{"time_usec": 2_147_483_648, "cursor": 2_147_483_648}],
              "sources": [], "entries_are_history": True, "origin": "editor"}
-    Draft202012Validator(SPECS["get_diagnostics"]["outputSchema"]).validate(entry)
-    assert_invalid("get_diagnostics", {"since": 9_007_199_254_740_992})
+    Draft202012Validator(SPECS["get_logs"]["outputSchema"]).validate({
+        "entries": entry["entries"], "history": True, "current_verdict": False, "origin": "editor",
+    })
+    assert_invalid("get_logs", {"since": 9_007_199_254_740_992})

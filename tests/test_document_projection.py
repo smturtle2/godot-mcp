@@ -38,6 +38,7 @@ def test_receipt_uses_explicit_essential_fields_without_mutating_snapshot():
         "operation_id": "operation-test-1", "details_retained": True, "status": "completed",
         "documents": [{"uri": "res://a.gd", "effect": "updated", "state": "modified", "revision": "current", "validation": {"state": "valid"}}],
         "undo": {"edit_id": "edit-1", "scope": ["live_sources"], "retained_files": []},
+        "validation_snapshot": "snapshot-1",
     }
     receipt["documents"][0]["revision"] = "changed receipt"
     assert value == original
@@ -73,12 +74,13 @@ def test_created_source_attachment_and_stale_verdict_keep_separate_boundaries():
     record["validation"] = {"state": "pending", "checked_state": "valid", "revision": "written", "scope": "snapshot",
                             "entries": [{"kind": "warning", "message": "Changed after validation.", "line": 0}]}
     node = {"scene": "res://main.tscn", "path": "."}
+    attachment = {"script": {"uri": record["uri"], "node": node}}
     recovery = {"tool": "update_nodes", "arguments": {"changes": [{"node": node, "set": {"script": {"$type": "Resource", "uri": record["uri"]}}}]},
                 "prerequisite": "Repair source first."}
     value = canonical(record, status="partial")
-    value.update(attachments=[node], failures=[{"phase": "attachment", "code": "INCOMPATIBLE_BASE", "message": "Cannot attach.", "node": node, "recovery": recovery}],
+    value.update(attachments=[attachment], failures=[{"phase": "bindings", "code": "INCOMPATIBLE_BASE", "message": "Cannot attach.", "node": node, "recovery": recovery}],
                  pending_save=[record["uri"], node["scene"]], undo={"edit_id": "attach-1", "scope": ["attachments"], "retained_files": [record["uri"]]})
-    projected = project_result("create_script", value)
+    projected = project_result("apply_script_changes", value)
     Draft202012Validator(DOCUMENT_OUTPUT).validate(projected)
     current = projected["documents"][0]
     assert current["state"] == "modified" and current["save"]["state"] == "saved"

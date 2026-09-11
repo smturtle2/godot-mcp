@@ -12,8 +12,7 @@ func _has_capture(prefix: String) -> bool:
 
 func _capture(message: String, data: Array, session_id: int) -> bool:
 	if message == "godot_mcp:ready" and not data.is_empty():
-		active_session = session_id
-		host.runtime.on_ready(data[0])
+		if host.runtime.on_ready(data[0]): active_session = session_id
 		return true
 	if message == "godot_mcp:result" and data.size() == 2:
 		if session_id == active_session and pending.has(int(data[0])):

@@ -49,6 +49,8 @@ Close the project in Godot and ask your AI to install the plugin in its absolute
 
 You can also run `godot-mcp init` from the project folder. For updates, close linked Godot projects, rerun the installer, and reconnect MCP.
 
+Source editing follows the current Godot editor buffers: read related files with `read_scripts`, then submit one context patch with `apply_script_changes`. Changes stay unsaved by default and use editor Undo. Current diagnostics and resumable source operations support repairing failures without repeating completed work. See the [source workflow](docs/workflows.md#source-workflow).
+
 ## Reference
 
 [45 tools](docs/tools.md) · [State and recovery](docs/workflows.md) · [Setup and troubleshooting](docs/installation.md) · [Development](docs/development.md) · [EUPL-1.2](LICENSE)

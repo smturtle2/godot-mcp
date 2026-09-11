@@ -35,6 +35,7 @@ var debugger: EditorDebuggerPlugin
 var logs: Logger
 var status_label: Label
 var registry_path: String = ""
+var edit_parent: Dictionary = {}
 
 func _enter_tree() -> void:
 	var engine: Dictionary = Engine.get_version_info()
@@ -97,7 +98,11 @@ func _enter_tree() -> void:
 
 func _exit_tree() -> void:
 	set_process(false)
-	if documents: documents.store.shutdown()
+	if documents:
+		documents.operations.shutdown()
+		documents.diagnostics.shutdown()
+		documents.validator.shutdown()
+		documents.store.shutdown()
 	if assets: assets.imports.shutdown()
 	for item: Dictionary in peers:
 		item.peer.close()
@@ -158,7 +163,7 @@ func _process(_delta: float) -> void:
 			stream.disconnect_from_host()
 			continue
 		var peer := WebSocketPeer.new()
-		peer.inbound_buffer_size = 4 * 1024 * 1024
+		peer.inbound_buffer_size = 32 * 1024 * 1024
 		peer.outbound_buffer_size = 32 * 1024 * 1024
 		peer.accept_stream(stream)
 		peers.append({"peer": peer, "time": Time.get_ticks_msec(), "authenticated": false})
@@ -180,12 +185,14 @@ func _process(_delta: float) -> void:
 				peer.close(1008, "Unauthorized")
 				break
 			item.authenticated = true
-			if busy:
-				_respond(peer, request.get("id"), fail("EDITOR_BUSY", "Another request is still running."))
-			elif not request.get("params", {}) is Dictionary:
+			if not request.get("params", {}) is Dictionary:
 				_respond(peer, request.get("id"), fail("INVALID_ARGUMENT", "params must be an object."))
 			elif not paths_safe(request.get("params", {})):
 				_respond(peer, request.get("id"), fail("INVALID_PATH", "Project path contains traversal or a symlink."))
+			elif busy and request.get("method", "") == "get_operation_result":
+				_respond(peer, request.get("id"), operation_result(str(request.get("params", {}).get("operation_id", ""))))
+			elif busy:
+				_respond(peer, request.get("id"), fail("EDITOR_BUSY", "Another request is still running."))
 			else:
 				_execute(peer, request)
 
@@ -218,12 +225,12 @@ func dispatch(method: String, p: Dictionary) -> Dictionary:
 	match method:
 		"get_context": return context(p)
 		"undo_edit": return undo_edit(p)
-		"get_operation_result": return operation_records.get_result(str(p.get("operation_id", "")))
+		"get_operation_result": return operation_result(str(p.get("operation_id", "")))
 		"_debug_state": return debugger.state()
 		"_breakpoints": return documents.breakpoints(p)
 	for module: RefCounted in modules:
 		if module.handles(method):
-			if method in ["create_script", "edit_script", "apply_script_changes", "save_documents"]:
+			if method == "save_documents":
 				var reservation: Dictionary = operation_records.begin(method)
 				if reservation.has("error"): return reservation
 				var result: Dictionary = await module.dispatch(method, p)
@@ -236,6 +243,18 @@ func dispatch(method: String, p: Dictionary) -> Dictionary:
 			return await module.dispatch(method, p)
 	return fail("UNKNOWN_TOOL", "Unknown tool: " + method)
 
+func operation_result(id: String) -> Dictionary:
+	var value: Dictionary = operation_records.get_result(id)
+	if not value.has("error") and value.tool == "apply_script_changes":
+		value.current_resume = documents.operations.resume_availability(id)
+		var uris: Array = []
+		for record: Dictionary in value.result.get("documents", []):
+			if str(record.uri).get_extension() in ["gd", "gdshader"]: uris.append(record.uri)
+		value.current_runtime = runtime.source_state(uris)
+		value.undo_steps = []
+		for step: Dictionary in value.result.get("undo", {}).get("steps", []): value.undo_steps.append(undo_availability(step.edit_id))
+	return value
+
 func fail(code: String, message: String, details: Dictionary = {}) -> Dictionary:
 	return {"error": {"code": code, "message": message, "details": details}}
 
@@ -247,6 +266,8 @@ func context(p: Dictionary) -> Dictionary:
 	var data: Dictionary = {"project": ProjectSettings.globalize_path("res://"), "engine": Engine.get_version_info(), "version": Version.PRODUCT, "protocol": Version.PROTOCOL, "editor_epoch": epoch, "active_scene": root.scene_file_path if root else null, "selected_nodes": selected, "unsaved_scenes": EditorInterface.get_unsaved_scenes(), "unsaved_scripts": EditorInterface.get_script_editor().get_unsaved_files(), "unsaved_resources": dirty_resources(), "running": EditorInterface.is_playing_scene(), "run_id": runtime.run_id, "runtime_connected": runtime.ready, "debugger": debugger.state()}
 	var scope: String = p.get("scope", "all")
 	data.pending_operations = assets.imports.pending()
+	data.pending_operations.append_array(documents.operations.pending())
+	data.pending_operations.append_array(documents.diagnostics.pending())
 	if scope == "project":
 		return {"project": data.project, "engine": data.engine, "version": data.version, "protocol": data.protocol}
 	if scope == "runtime":
@@ -356,6 +377,10 @@ func property_error(object: Object, values: Dictionary) -> String:
 
 func begin_edit(label: String, context_object: Object) -> void:
 	get_undo_redo().create_action("MCP: " + label, UndoRedo.MERGE_DISABLE, context_object)
+	var history_id: int = get_undo_redo().get_object_history_id(context_object)
+	var history := get_undo_redo().get_history_undo_redo(history_id)
+	edit_parent = {"id": null}
+	if history and not edits.is_empty() and edits.back().history_id == history_id and edits.back().history_version == history.get_version(): edit_parent.id = edits.back().edit_id
 
 func add_changes(changes: Array) -> void:
 	for change: Dictionary in changes:
@@ -371,8 +396,9 @@ func finish_edit(context_object: Object, label: String, guards: Array = [], exec
 	get_undo_redo().commit_action(execute)
 	var history_id: int = get_undo_redo().get_object_history_id(context_object)
 	var history := get_undo_redo().get_history_undo_redo(history_id)
-	var edit: Dictionary = {"edit_id": "edit-" + epoch + "-" + str(Time.get_ticks_usec()), "history_id": history_id, "history_version": history.get_version(), "label": label, "guards": guards}
+	var edit: Dictionary = {"edit_id": "edit-" + epoch + "-" + str(Time.get_ticks_usec()), "history_id": history_id, "history_version": history.get_version(), "label": label, "guards": guards, "parent_edit_id": edit_parent.get("id")}
 	edits.append(edit)
+	edit_parent = {}
 	if edits.size() > 100: edits.pop_front()
 	return {"edit_id": edit.edit_id, "saved": false}
 
@@ -400,6 +426,10 @@ func undo_edit(p: Dictionary) -> Dictionary:
 	var history := get_undo_redo().get_history_undo_redo(edit.history_id)
 	history.undo()
 	edits.pop_back()
+	# Only a proven direct MCP predecessor may follow the version change from
+	# undoing this action. Never retag across an intervening user edit.
+	if not edits.is_empty() and edit.get("parent_edit_id") == edits.back().edit_id and edits.back().history_id == edit.history_id:
+		edits.back().history_version = history.get_version()
 	return {"undone": edit.edit_id, "label": edit.label, "saved": false}
 
 func undo_availability(edit_id: Variant) -> Dictionary:

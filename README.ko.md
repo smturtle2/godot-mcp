@@ -49,6 +49,8 @@ Godot에서 프로젝트를 닫고, AI에게 프로젝트의 절대 경로를 �
 
 터미널에서는 프로젝트 폴더에서 `godot-mcp init`을 실행해도 됩니다. 업데이트할 때는 연결된 Godot 프로젝트를 닫고 설치 스크립트를 다시 실행한 뒤 MCP를 다시 연결하세요.
 
+소스 편집은 Godot 에디터의 현재 버퍼를 기준으로 합니다. `read_scripts`로 관련 파일을 읽고 `apply_script_changes`로 하나의 문맥 패치를 적용합니다. 기본값은 저장하지 않으며 에디터의 실행 취소를 지원합니다. 현재 소스 진단과 작업 재개 기능으로 완료된 단계를 반복하지 않고 오류를 수정할 수 있습니다. 자세한 내용은 [소스 작업 흐름](docs/workflows.md#source-workflow)을 참고하세요.
+
 ## 참고
 
 [45개 도구](docs/tools.md) · [상태와 복구](docs/workflows.md) · [설정 및 문제 해결](docs/installation.md) · [개발](docs/development.md) · [EUPL-1.2](LICENSE)

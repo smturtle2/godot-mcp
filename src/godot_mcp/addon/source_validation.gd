@@ -7,19 +7,101 @@ const MAX_FILES := 20000
 const MAX_BYTES := 512 * 1024 * 1024
 const EXCLUDED := [".git", ".godot", ".godot-mcp", ".venv", ".pytest_cache", ".ruff_cache"]
 const ProcessOutput = preload("res://addons/godot_mcp/process_output.gd")
+var worker: Thread
+var checking: bool = false
+var stopped: bool = false
+var child_pid: int = 0
+var lifecycle := Mutex.new()
+var cache: Dictionary = {}
+const MAX_CACHE_BYTES := 16 * 1024 * 1024
 
 func _init(editor_host: EditorPlugin) -> void:
 	host = editor_host
 
 func check(uris: Array, overlays: Dictionary, revisions: Dictionary) -> Dictionary:
-	var worker := Thread.new()
+	# Serialize compiler jobs: Godot processes and their caches have one owner.
+	while checking and not stopped: await host.get_tree().process_frame
+	if stopped: return unavailable(uris, revisions, "The editor validation service stopped.")
+	checking = true
+	worker = Thread.new()
 	var project: String = ProjectSettings.globalize_path("res://")
 	var executable: String = OS.get_executable_path()
-	var error: Error = worker.start(_run.bind(project, executable, uris.duplicate(), overlays.duplicate(true), revisions.duplicate(true)))
-	if error != OK: return unavailable(uris, revisions, "Cannot start the validation worker.")
-	while worker.is_alive():
+	var error: Error = worker.start(_run_cached.bind(project, executable, uris.duplicate(), overlays.duplicate(true), revisions.duplicate(true)))
+	if error != OK:
+		checking = false
+		return unavailable(uris, revisions, "Cannot start the validation worker.")
+	while not stopped and worker.is_alive():
 		await host.get_tree().process_frame
-	return worker.wait_to_finish()
+	if stopped: return unavailable(uris, revisions, "The editor validation service stopped.")
+	var result: Dictionary = worker.wait_to_finish()
+	worker = null
+	checking = false
+	return result
+
+func shutdown() -> void:
+	lifecycle.lock()
+	stopped = true
+	if child_pid > 0 and OS.is_process_running(child_pid): OS.kill(child_pid)
+	lifecycle.unlock()
+	if worker and worker.is_started(): worker.wait_to_finish()
+	worker = null
+	checking = false
+	cache.clear()
+
+func _stopped() -> bool:
+	lifecycle.lock()
+	var value: bool = stopped
+	lifecycle.unlock()
+	return value
+
+func _sorted(values: Dictionary) -> Dictionary:
+	var result: Dictionary = {}
+	var keys: Array = values.keys()
+	keys.sort()
+	for key: String in keys: result[key] = values[key]
+	return result
+
+func _run_cached(project: String, executable: String, uris: Array, overlays: Dictionary, revisions: Dictionary) -> Dictionary:
+	var manifest: Dictionary = {}
+	var excluded: Array[String] = []
+	var symlinks: Array[String] = []
+	var message: String = _fingerprint_tree(project, manifest, [0, 0], excluded, symlinks)
+	if not message.is_empty(): return unavailable(uris, revisions, message)
+	var overlay_hashes: Dictionary = {}
+	for uri: String in overlays: overlay_hashes[uri] = str(overlays[uri]).sha256_text()
+	symlinks.sort()
+	excluded.sort()
+	var executable_hash: String = _hash_file(executable)
+	if executable_hash.is_empty(): return unavailable(uris, revisions, "Cannot identify the validation executable.")
+	var fingerprint: String = JSON.stringify([_sorted(manifest), _sorted(overlay_hashes), uris, _sorted(revisions), symlinks, excluded, executable_hash]).sha256_text()
+	var reused: bool = cache.has(fingerprint)
+	var result: Dictionary = cache[fingerprint].duplicate(true) if reused else _run(project, executable, uris, overlays, revisions)
+	# A cache hit still needs a fresh disk check. A new snapshot must correspond
+	# to the fingerprint captured before compilation, not a racing later state.
+	message = _project_changed(project, manifest, symlinks)
+	if not message.is_empty() or _hash_file(executable) != executable_hash:
+		return unavailable(uris, revisions, message if not message.is_empty() else "The validator executable changed during validation.")
+	result.cache = "reused" if reused else "compiled"
+	result.fingerprint = fingerprint
+	var settled: bool = result.has("snapshot_id")
+	for source: Dictionary in result.sources:
+		if source.get("state") not in ["valid", "invalid"]: settled = false
+	if settled and not reused:
+		cache[fingerprint] = result.duplicate(true)
+		while cache.size() > 8 or JSON.stringify(cache).to_utf8_buffer().size() > MAX_CACHE_BYTES:
+			cache.erase(cache.keys()[0])
+	result.proof = {"manifest": manifest, "symlinks": symlinks, "overlays": overlay_hashes, "executable": executable_hash}
+	return result
+
+func proof_current(proof: Dictionary, overlays: Dictionary) -> Dictionary:
+	if proof.is_empty(): return {"current": false, "reason": "No validation input proof is available."}
+	var hashes: Dictionary = {}
+	for uri: String in overlays: hashes[uri] = str(overlays[uri]).sha256_text()
+	if hashes != proof.overlays: return {"current": false, "reason": "An unsaved source or project setting changed after validation."}
+	var message: String = _project_changed(ProjectSettings.globalize_path("res://"), proof.manifest, proof.symlinks)
+	if not message.is_empty(): return {"current": false, "reason": message}
+	if _hash_file(OS.get_executable_path()) != proof.executable: return {"current": false, "reason": "The validator executable changed."}
+	return {"current": true}
 
 func unavailable(uris: Array, revisions: Dictionary, message: String) -> Dictionary:
 	var sources: Array = []
@@ -45,6 +127,7 @@ func _walk_tree(source: String, target: String, budget: Array, manifest: Diction
 	directory.list_dir_begin()
 	var name: String = directory.get_next()
 	while not name.is_empty():
+		if _stopped(): return "Validation cancelled because the editor stopped."
 		if name in EXCLUDED:
 			excluded.append(relative.path_join(name))
 			name = directory.get_next()
@@ -120,9 +203,17 @@ func _remove_tree(path: String) -> void:
 	DirAccess.remove_absolute(path)
 
 func _execute(executable: String, arguments: PackedStringArray, timeout_ms: int) -> Dictionary:
+	lifecycle.lock()
+	if stopped:
+		lifecycle.unlock()
+		return {"ok": false, "message": "Validation cancelled because the editor stopped."}
 	var process: Dictionary = OS.execute_with_pipe(executable, arguments, false)
-	if process.is_empty(): return {"ok": false, "message": "Cannot start the Godot validator."}
+	if process.is_empty():
+		lifecycle.unlock()
+		return {"ok": false, "message": "Cannot start the Godot validator."}
 	var pid: int = int(process.pid)
+	child_pid = pid
+	lifecycle.unlock()
 	var start: int = Time.get_ticks_msec()
 	var collected := ProcessOutput.new()
 	while OS.is_process_running(pid):
@@ -131,8 +222,13 @@ func _execute(executable: String, arguments: PackedStringArray, timeout_ms: int)
 			if pipe:
 				var bytes: PackedByteArray = pipe.get_buffer(8192)
 				collected.append("stdout" if key == "stdio" else "stderr", bytes)
-		if Time.get_ticks_msec() - start > timeout_ms:
+		if _stopped() or Time.get_ticks_msec() - start > timeout_ms:
 			OS.kill(pid)
+			lifecycle.lock()
+			child_pid = 0
+			lifecycle.unlock()
+			for key: String in ["stdio", "stderr"]:
+				if process.get(key): process[key].close()
 			var timeout_result: Dictionary = collected.result()
 			return {"ok": false, "message": timeout_result.stdout + timeout_result.stderr, "truncated": timeout_result.truncated}
 		OS.delay_msec(10)
@@ -147,6 +243,9 @@ func _execute(executable: String, arguments: PackedStringArray, timeout_ms: int)
 		pipe.close()
 	var output: Dictionary = collected.result()
 	var code: int = OS.get_process_exit_code(pid)
+	lifecycle.lock()
+	child_pid = 0
+	lifecycle.unlock()
 	return {"ok": code == 0, "message": output.stdout + output.stderr, "exit_code": code, "truncated": output.truncated}
 
 func _affected_by_symlink(uri: String, source: String, symlinks: Array[String]) -> bool:

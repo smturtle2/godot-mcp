@@ -35,20 +35,6 @@ def test_each_condition_kind_has_named_payload(condition):
     validate("wait_for_condition", {"run_id": "run-1", "condition": condition})
 
 
-@pytest.mark.parametrize("change", [
-    {"create": {"uri": "res://new.gd", "source": "extends Node"}},
-    {"replace": {"uri": "res://a.gd", "if_revision": "r1", "source": "extends Node"}},
-    {"edit": {"uri": "res://a.gd", "if_revision": "r1", "edits": [{"range": {"start": {"line": 1, "column": 1}, "end": {"line": 1, "column": 2}}, "text": "x"}]}},
-])
-def test_each_script_batch_kind_has_named_payload(change):
-    validate("apply_script_changes", {"changes": [change]})
-
-
-def test_edit_script_uses_replace_or_edit_choice():
-    validate("edit_script", {"change": {"replace": {"uri": "res://a.gd", "if_revision": "r1", "source": "x"}}})
-    validate("edit_script", {"change": {"edit": {"uri": "res://a.gd", "if_revision": "r1", "edits": [{"range": {"start": {"line": 1, "column": 1}, "end": {"line": 1, "column": 2}}, "text": "x"}]}}})
-
-
 def test_resource_and_scoped_targets():
     validate("get_resource", {"target": {"uri": "res://material.tres"}})
     validate("get_resource", {"target": {"node": {**NODE, "property": "material"}}})
@@ -83,7 +69,7 @@ def test_each_tileset_case_has_named_payload(change):
 @pytest.mark.parametrize("tool,value", [
     ("send_input", {"run_id": "r", "events": [{"event": {}}]}),
     ("send_input", {"run_id": "r", "events": [{"event": {"key": {"key": "A", "pressed": True}, "action": {"action": "jump", "pressed": True}}}]}),
-    ("apply_script_changes", {"changes": [{"create": {"uri": "res://a.gd", "source": "x"}, "edit": {"uri": "res://a.gd", "if_revision": "r", "edits": []}}]}),
+    ("apply_script_changes", {"patch": "x", "unknown": True}),
     ("edit_tileset", {"target": {"shared": {"uri": "res://t.tres"}}, "changes": [{"add_atlas": {"texture": "res://a.png", "unknown": True}}]}),
 ])
 def test_missing_multiple_or_unknown_named_cases_fail(tool, value):
@@ -93,7 +79,7 @@ def test_missing_multiple_or_unknown_named_cases_fail(tool, value):
 
 @pytest.mark.parametrize("tool,value", [
     ("send_input", {"run_id": "r", "events": [{"event": {"key": "bad"}}]}),
-    ("apply_script_changes", {"changes": [{"create": "bad"}]}),
+    ("apply_script_changes", {"patch": ""}),
     ("create_nodes", {"parent": NODE, "nodes": [{"name": "N", "source": {"class": 1}}]}),
 ])
 def test_wrong_payload_types_fail(tool, value):

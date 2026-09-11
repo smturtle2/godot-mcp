@@ -11,6 +11,7 @@ from mcp import Client
 from godot_mcp.bridge import ToolError
 from godot_mcp.catalog import SPECS
 from godot_mcp.server import create_server
+from godot_mcp.source_tools import SourceTools
 
 pytestmark = [pytest.mark.integration, pytest.mark.skipif(
     os.environ.get('GODOT_MCP_INTEGRATION') != '1', reason='opt-in real editor')]
@@ -171,9 +172,9 @@ async def test_partial_write_keeps_a_guarded_recovery_boundary(editor, external_
 async def test_import_rejects_an_unsaved_store_draft(editor):
     bridge, tmp = editor
     draft = 'extends Node\n# unsaved MCP draft\n'
-    created = await bridge.call('apply_script_changes', {'changes': [
-        {'create': {'uri': 'res://draft.gd', 'source': draft}},
-    ]})
+    source_tools = SourceTools(bridge)
+    receipt = await source_tools.call('apply_script_changes', {'patch': '*** Begin Patch\n*** Add File: res://draft.gd\n+extends Node\n+# unsaved MCP draft\n*** End Patch', 'wait_ms': 0})
+    created = (await source_tools.operation(receipt['operation_id'], 60000))['result']
     assert created['documents'][0]['state'] == 'draft'
     assert created['pending_save'] == ['res://draft.gd']
     assert not (bridge.project / 'draft.gd').exists()
@@ -185,5 +186,5 @@ async def test_import_rejects_an_unsaved_store_draft(editor):
         ]})
     assert error.value.code == 'UNSAVED_DOCUMENTS'
     assert not (bridge.project / 'draft.gd').exists()
-    current = await bridge.call('read_script', {'uri': 'res://draft.gd'})
+    current = (await bridge.call('read_scripts', {'documents': [{'uri': 'res://draft.gd'}]}))['documents'][0]
     assert current['source'] == draft

@@ -7,6 +7,11 @@ var buffers: Dictionary = {}
 var observing: bool = false
 var writing: bool = false
 var stopped: bool = false
+const MAX_BASE_VERSIONS := 256
+const MAX_BASE_BYTES := 16 * 1024 * 1024
+const MAX_SOURCE_BYTES := 1000000
+var bases: Dictionary = {}
+var base_bytes: int = 0
 
 func _init(editor_host: EditorPlugin) -> void:
 	host = editor_host
@@ -88,6 +93,25 @@ func _disk(uri: String) -> Dictionary:
 	var exists: bool = FileAccess.file_exists(uri)
 	var source: String = FileAccess.get_file_as_string(uri) if exists else ""
 	return {"exists": exists, "source": source, "revision": source.sha256_text() if exists else null}
+
+func _remember(uri: String, source: String, revision: String) -> bool:
+	var key: String = uri + "\n" + revision
+	if bases.has(key): return true
+	var bytes: int = source.to_utf8_buffer().size()
+	if bytes > MAX_SOURCE_BYTES: return false
+	while not bases.is_empty() and (bases.size() >= MAX_BASE_VERSIONS or base_bytes + bytes > MAX_BASE_BYTES):
+		var oldest: String = bases.keys()[0]
+		base_bytes -= int(bases[oldest].bytes)
+		bases.erase(oldest)
+	bases[key] = {"source": source, "bytes": bytes}
+	base_bytes += bytes
+	return true
+
+func base_source(uri: String, revision: String) -> Dictionary:
+	var key: String = uri + "\n" + revision
+	if not bases.has(key):
+		return host.fail("BASE_REVISION_EXPIRED", "The original source is no longer retained. Read current source and make a fresh patch.", {"uri": uri, "base_revision": revision})
+	return {"source": bases[key].source, "revision": revision}
 
 func _track_buffer(uri: String, buffer: TextEdit) -> void:
 	if not uri.begins_with("res://") or not uri.ends_with(".gd"): return
@@ -179,7 +203,7 @@ func source_info(uri: String) -> Dictionary:
 	state.origin = origin
 	state.dirty = not disk.exists or revision != disk.revision
 	var conflict: String = "baseline_unknown" if not state.base_known else ("external_change" if state.base_disk_revision != disk.revision else "none")
-	return {"uri": uri, "source": source, "revision": revision, "disk_revision": disk.revision, "base_disk_revision": state.base_disk_revision if state.base_known else null, "baseline_known": state.base_known, "exists_on_disk": disk.exists, "unsaved": state.dirty, "buffer": origin, "external_change": conflict != "none", "conflict": conflict}
+	return {"uri": uri, "source": source, "revision": revision, "disk_revision": disk.revision, "base_disk_revision": state.base_disk_revision if state.base_known else null, "baseline_known": state.base_known, "exists_on_disk": disk.exists, "unsaved": state.dirty, "buffer": origin, "external_change": conflict != "none", "conflict": conflict, "base_retained": _remember(uri, source, revision)}
 
 func set_source(uri: String, source: String, resource: Resource = null) -> void:
 	var disk: Dictionary = _disk(uri)

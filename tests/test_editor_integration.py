@@ -13,6 +13,7 @@ from godot_mcp.bridge import ToolError
 from godot_mcp.catalog import TOOL_SPECS
 from godot_mcp.debugger import DebugTools
 from godot_mcp.server import create_server
+from godot_mcp.source_tools import SourceTools
 
 pytestmark = [pytest.mark.integration, pytest.mark.skipif(os.environ.get('GODOT_MCP_INTEGRATION') != '1', reason='opt-in real editor')]
 
@@ -26,7 +27,14 @@ def vector(x, y):
 
 
 async def call(bridge, tool_name, **arguments):
-    result = await bridge.call(tool_name, arguments)
+    if tool_name == 'apply_script_changes':
+        source_tools = SourceTools(bridge)
+        arguments['wait_ms'] = 0
+        receipt = await source_tools.call(tool_name, arguments)
+        detail = await source_tools.operation(receipt['operation_id'], 60000)
+        result = detail['result']
+    else:
+        result = await bridge.call(tool_name, arguments)
     assert result, f'{tool_name} returned empty (check GDScript runtime errors)'
     return result
 
@@ -38,8 +46,8 @@ async def test_editor_authoring(editor):
         assert len((await client.list_tools()).tools) == len(TOOL_SPECS)
         result = await client.call_tool('get_context', {})
         assert not result.is_error
-    diagnostics = await call(b, 'get_diagnostics')
-    assert not any('Unexpected NUL character' in entry['message'] for entry in diagnostics['entries']), diagnostics
+    logs = await call(b, 'get_logs')
+    assert not any('Unexpected NUL character' in entry['message'] for entry in logs['entries']), logs
     r = await call(b, 'create_nodes', parent=ref(), nodes=[{'name': n, 'source': {'class': c}} for n, c in [('Sprite', 'Sprite2D'), ('Anim', 'AnimationPlayer'), ('Tree', 'AnimationTree'), ('Tiles', 'TileMapLayer')]])
     assert len(r['nodes']) == 4
     r = await call(b, 'update_nodes', changes=[{'node': ref('Sprite'), 'set': {'position': vector(12, 34)}}])
@@ -92,17 +100,19 @@ async def test_editor_authoring(editor):
     with pytest.raises(ToolError, match='inherited'):
         await call(b, 'delete_nodes', nodes=[ref('Child', 'res://derived.tscn')])
     await call(b, 'open_scene', scene='res://main.tscn')
-    r = await call(b, 'create_script', uri='res://behavior.gd', source='extends Node2D\n\nfunc react(value: int) -> void:\n\tposition.x = value\n', attach_to=[ref('Sprite')])
-    assert r['attachments'] == [ref('Sprite')]
+    r = await call(b, 'apply_script_changes', patch='*** Begin Patch\n*** Add File: res://behavior.gd\n+extends Node2D\n+\n+func react(value: int) -> void:\n+\tposition.x = value\n*** End Patch', save=True, attachments=[{'script': {'uri': 'res://behavior.gd', 'node': ref('Sprite')}}])
+    assert r['attachments'] == [{'script': {'uri': 'res://behavior.gd', 'node': ref('Sprite')}}]
+    assert r['status'] == 'completed'
     assert r['documents'][0]['validation']['state'] == 'valid'
-    r = await call(b, 'read_script', uri='res://behavior.gd')
-    revision = r['revision']
-    r = await call(b, 'edit_script', change={'edit': {'uri': 'res://behavior.gd', 'if_revision': revision, 'edits': [{'range': {'start': {'line': 4, 'column': 15}, 'end': {'line': 4, 'column': 20}}, 'text': 'value * 2'}]}})
+    r = await call(b, 'read_scripts', documents=[{'uri': 'res://behavior.gd'}])
+    revisions = r['base_revisions']
+    r = await call(b, 'apply_script_changes', patch='*** Begin Patch\n*** Update File: res://behavior.gd\n@@\n-\tposition.x = value\n+\tposition.x = value * 2\n*** End Patch', base_revisions=revisions)
     assert r['documents'][0]['validation']['state'] == 'valid'
     assert r['undo']['edit_id']
-    with pytest.raises(ToolError):
-        await call(b, 'edit_script', change={'edit': {'uri': 'res://behavior.gd', 'if_revision': revision, 'edits': [{'range': {'start': {'line': 1, 'column': 1}, 'end': {'line': 1, 'column': 1}}, 'text': '# stale\n'}]}})
-    assert (await call(b, 'read_script', uri='res://behavior.gd'))['unsaved']
+    with pytest.raises(ToolError) as caught:
+        await call(b, 'apply_script_changes', patch='*** Begin Patch\n*** Update File: res://behavior.gd\n@@\n-\tposition.x = value\n+\tposition.x = value * 3\n*** End Patch', base_revisions=revisions)
+    assert caught.value.code == 'REVISION_CONFLICT'
+    assert (await call(b, 'read_scripts', documents=[{'uri': 'res://behavior.gd'}]))['documents'][0]['unsaved']
     await call(b, 'update_signals', connect=[{'from': ref(), 'signal': 'health_changed', 'to': ref('Sprite'), 'method': 'react'}])
     saved = await call(b, 'save_documents', uris=['res://main.tscn', 'res://behavior.gd'])
     assert saved['complete'], saved
@@ -115,7 +125,7 @@ async def test_editor_authoring(editor):
     r = await call(b, 'update_settings', settings={'application/config/name': 'Changed'}, input_actions=[{'name': 'test_jump', 'events': [{'type': 'key', 'key': 'Space'}]}])
     await call(b, 'undo_edit', edit_id=r['edit_id'])
     assert (await call(b, 'get_settings', keys=['application/config/name']))['settings'] == original
-    assert 'entries' in await call(b, 'get_diagnostics')
+    assert 'entries' in await call(b, 'get_logs')
     assert (await call(b, 'get_export_presets'))['presets'][0]['name'] == 'Linux Test'
     await call(b, 'save_documents', uris=['res://main.tscn'])
     exported = await call(b, 'export_build', preset='Linux Test', output=(tmp / 'test.pck').as_uri())

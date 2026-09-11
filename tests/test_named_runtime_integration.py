@@ -19,7 +19,7 @@ def test_named_input_events_conditions_and_preflight(tmp_path):
     addon = project / "addons" / "godot_mcp"
     addon.mkdir(parents=True)
     source_addon = Path(__file__).parents[1] / "src" / "godot_mcp" / "addon"
-    for name in ("runtime.gd", "codec.gd", "log_buffer.gd", "operation_result.gd"):
+    for name in ("runtime.gd", "source_manifest.gd", "codec.gd", "log_buffer.gd", "operation_result.gd"):
         shutil.copy2(source_addon / name, addon / name)
     (project / "project.godot").write_text(
         "config_version=5\n[application]\nconfig/name=\"named runtime\"\nrun/main_scene=\"res://main.tscn\"\n"

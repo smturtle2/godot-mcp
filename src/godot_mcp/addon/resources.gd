@@ -93,7 +93,7 @@ func save_new(resource: Resource, uri: String) -> Error:
 func create_resource(p: Dictionary) -> Dictionary:
 	var cls: String = p.get("class", "Resource")
 	if not ClassDB.can_instantiate(cls) or not ClassDB.is_parent_class(cls, "Resource") or ClassDB.is_parent_class(cls, "Script"):
-		return host.fail("INVALID_CLASS", "Use an instantiable Resource class; use create_script for code.")
+		return host.fail("INVALID_CLASS", "Use an instantiable Resource class; use apply_script_changes for code.")
 	var resource: Resource = ClassDB.instantiate(cls) as Resource
 	var property_plan: Dictionary = host.plan_property_changes(resource, p.get("properties", {}))
 	if property_plan.has("error"): return property_plan

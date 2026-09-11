@@ -6,6 +6,9 @@ import os
 
 import pytest
 
+from godot_mcp.bridge import ToolError
+from godot_mcp.source_tools import SourceTools
+
 pytestmark = [pytest.mark.integration, pytest.mark.skipif(
     os.environ.get('GODOT_MCP_INTEGRATION') != '1', reason='opt-in real editor')]
 
@@ -52,8 +55,15 @@ EXTERNAL = 'extends Node\nvar number: int = 3\n'
 
 
 async def setup_buffer(bridge):
-    result = await bridge.call('create_script', {'uri': URI, 'source': BASE})
-    assert result['documents'][0]['save']['state'] == 'saved', result
+    source_tools = SourceTools(bridge)
+    receipt = await source_tools.call('apply_script_changes', {
+        'patch': '*** Begin Patch\n*** Add File: res://manual.gd\n+extends Node\n+var number: int = 1\n*** End Patch',
+        'save': True,
+        'wait_ms': 0,
+    })
+    detail = await source_tools.operation(receipt['operation_id'], 60000)
+    result = detail['result']
+    assert result['status'] == 'completed' and result['documents'][0]['save']['state'] == 'saved', result
     await bridge.call('_test_source_buffer', {'uri': URI, 'action': 'open'})
 
 
@@ -64,7 +74,7 @@ async def test_manual_edit_conflict_blocks_source_and_scene_save(editor):
     await bridge.call('_test_source_buffer', {'uri': URI, 'action': 'edit', 'source': EDITED})
     path = bridge.project / 'manual.gd'
     path.write_text(EXTERNAL)
-    info = await bridge.call('read_script', {'uri': URI})
+    info = (await bridge.call('read_scripts', {'documents': [{'uri': URI}]}))['documents'][0]
     assert info['source'] == EDITED and info['external_change'], info
     assert info['base_disk_revision'] == hashlib.sha256(BASE.encode()).hexdigest()
     assert info['baseline_known'] and info['conflict'] == 'external_change'
@@ -73,7 +83,11 @@ async def test_manual_edit_conflict_blocks_source_and_scene_save(editor):
     assert path.read_text() == EXTERNAL
     scene = bridge.project / 'main.tscn'
     scene_before = scene.read_bytes()
-    saved_scene = await bridge.call('save_documents', {'uris': ['res://main.tscn']})
+    with pytest.raises(ToolError) as error:
+        await bridge.call('save_documents', {'uris': ['res://main.tscn']})
+    assert error.value.code == 'SAVE_SCOPE_REQUIRED'
+    assert URI in error.value.details['save_plan']['additional_uris'], error.value.details
+    saved_scene = await bridge.call('save_documents', {'uris': [URI, 'res://main.tscn']})
     assert saved_scene['status'] == 'failed' and not saved_scene['complete'] and saved_scene['failures'][0]['details']['conflicts'], saved_scene
     assert scene.read_bytes() == scene_before and path.read_text() == EXTERNAL
 
@@ -84,13 +98,13 @@ async def test_already_dirty_buffer_requires_known_baseline_and_undo_reconciles(
     await setup_buffer(bridge)
     await bridge.call('_test_source_buffer', {'uri': URI, 'action': 'edit', 'source': EDITED})
     await bridge.call('_test_source_buffer', {'uri': URI, 'action': 'restart_observer'})
-    info = await bridge.call('read_script', {'uri': URI})
+    info = (await bridge.call('read_scripts', {'documents': [{'uri': URI}]}))['documents'][0]
     assert not info['baseline_known'] and info['conflict'] == 'baseline_unknown', info
     saved = await bridge.call('save_documents', {'uris': [URI]})
     assert saved['status'] == 'failed' and not saved['complete'] and saved['documents'][0]['save']['state'] == 'failed'
     assert (bridge.project / 'manual.gd').read_text() == BASE
     await bridge.call('_test_source_buffer', {'uri': URI, 'action': 'undo'})
-    info = await bridge.call('read_script', {'uri': URI})
+    info = (await bridge.call('read_scripts', {'documents': [{'uri': URI}]}))['documents'][0]
     assert info['source'] == BASE and not info['external_change'] and not info['unsaved'], info
 
 
@@ -103,6 +117,6 @@ async def test_ui_save_updates_baseline_before_next_manual_change(editor):
     assert (bridge.project / 'manual.gd').read_text() == EDITED
     await bridge.call('_test_source_buffer', {'uri': URI, 'action': 'edit', 'source': 'extends Node\nvar number: int = 4\n'})
     (bridge.project / 'manual.gd').write_text(EXTERNAL)
-    info = await bridge.call('read_script', {'uri': URI})
+    info = (await bridge.call('read_scripts', {'documents': [{'uri': URI}]}))['documents'][0]
     assert info['external_change'], info
     assert info['base_disk_revision'] == hashlib.sha256(EDITED.encode()).hexdigest(), info

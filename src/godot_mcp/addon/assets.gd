@@ -93,6 +93,28 @@ func apply_settings(values: Dictionary) -> void:
 		else: ProjectSettings.set_setting(key, values[key])
 	InputMap.load_from_project_settings()
 
+func _normalized_settings(source: String) -> String:
+	var parsed := ConfigFile.new()
+	if parsed.parse(source) != OK: return ""
+	var normalized := ConfigFile.new()
+	var sections: PackedStringArray = parsed.get_sections()
+	sections.sort()
+	for section: String in sections:
+		var keys: PackedStringArray = parsed.get_section_keys(section)
+		keys.sort()
+		for key: String in keys: normalized.set_value(section, key, parsed.get_value(section, key))
+	return normalized.encode_to_text()
+
+func settings_snapshot() -> Dictionary:
+	# Serialize live settings to private metadata, never to the user's project
+	# file. Validation must include unsaved autoload/input/compiler settings.
+	var target: String = "res://.godot-mcp/project-state.godot"
+	if ProjectSettings.save_custom(target) != OK: return host.fail("SETTINGS_UNAVAILABLE", "Cannot capture current project settings.")
+	var source: String = FileAccess.get_file_as_string(target)
+	DirAccess.remove_absolute(target)
+	var disk: String = FileAccess.get_file_as_string("res://project.godot")
+	return {"source": source, "revision": source.sha256_text(), "saved": _normalized_settings(source) == _normalized_settings(disk)}
+
 func update_settings(p: Dictionary) -> Dictionary:
 	var after: Dictionary = {}
 	for key: String in p.get("settings", {}): after[key] = host.decode(p.settings[key])

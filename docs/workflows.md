@@ -1,83 +1,112 @@
 # State and recovery
 
-## Document operation results
+## Source workflow
 
-`create_script`, `edit_script`, `apply_script_changes`, and `save_documents` use one canonical document result. Each `documents[]` record is keyed by URI and owns the current revision, saved state, conflict metadata, validation state, live reload state, and save effect. The operation owns only the batch outcome: `status`, `complete`, `failures`, `pending_save`, and `undo`. `failures[]` preserves the failed phase, target, details, and executable `recovery` arguments.
+Read current editor sources or drafts with `read_scripts`:
 
-The default response is a compact receipt. It keeps the operation ID, document effects and state, validation state and checked revision, conflicts, undo scope, and every failure or recovery field. Routine diagnostic entries and detailed operation fields remain in the retained snapshot; `pending_save` may be omitted when the document state already makes the unsaved effect clear. Use `get_operation_result(operation_id)` for the detailed operation-time snapshot and current Undo eligibility; do not rerun a mutation to obtain details. The result store retains at most 64 records and 16 MiB of serialized result bytes, evicts completed records first, and loses records when the editor restarts. An oversized completed result expires; an oversized pending result remains identified but unavailable until a later publication. Operation IDs are distinct from Undo `edit_id` values.
+```json
+{"documents":[{"uri":"res://main.gd"},{"uri":"res://ui.gd","symbol":"build"}]}
+```
 
-A document's `revision` is the current live/editor text revision. An omitted validation revision means that document revision was checked. A different checked revision is retained with `state="pending"`, so its verdict does not describe the current text. Document `state="saved"` means the current source matches disk; an attachment can still be applied in the editor and require its own save/undo boundary.
+The response contains `documents`, `base_revisions`, and `editor_epoch`. A document includes its current `source` and `revision`; an optional `range` uses one-based Unicode columns with an exclusive end. Read bases are retained for conservative three-way merges within the editor session.
+
+Apply all source edits with one `apply_script_changes` patch string. The patch uses this format:
+
+```text
+*** Begin Patch
+*** Add File: res://new.gd
++extends Node
++
++func run() -> void:
++    pass
+*** Update File: res://main.gd
+@@
+ extends Node
+-old_call()
++new_call()
+*** End Patch
+```
+
+Use `*** Begin Patch`, `*** Add File: res://...` or `*** Update File: res://...`, `@@` context hunks, space/`-`/`+` hunk prefixes, and `*** End Patch`. Updated URIs require their returned values from `base_revisions`; an all-new patch may omit the map. Context is exact and has no whitespace fuzz. Retained bases permit a non-overlapping concurrent edit to merge. Overlapping or ambiguous edits are conflicts and make no source change. `preview: true` returns the guarded text plan and save scope without applying or validating it.
+
+`save` defaults to `false` for both Add and Update, leaving live editor changes as drafts. `save: true` persists sources before validation and saves binding owners after successful binding work. Saved source remains on disk if a later validation phase fails. Source changes already applied remain available for repair after a compile or binding failure.
+
+One operation coordinates these phases, in order: `source`, `save_sources`, `validation`, `editor_reload`, `bindings`, and `save_bindings`. A `pending` response includes `operation_id`; call `get_operation_result` with that ID (and optional `wait_ms`) to wait for the same work without replaying it. The operation result reports per-document state, validation and save effects, failures with phase and recovery details, pending work, and Undo information.
+
+`resume_script_changes` continues blocked or unfinished phases without replaying the patch or successful bindings. It preserves completed bindings. After repairing text, provide a current read revision for every original source in `revisions`; accepting repaired text without all original source revisions is rejected. Changes made to the targets while the operation was blocked still cause conflicts.
+
+Source changes retain one Undo action plus binding steps in newest-first order. Disk files are preserved. Saving a scene can include linked edited sources; if the scope is incomplete, the operation fails with `SAVE_SCOPE_REQUIRED` and reports the additional URIs to pass explicitly to `save_documents`.
 
 ## Resource targets
 
-A resource target is exactly one of these forms:
+A resource selector is exactly one of these forms:
 
 ```json
-{"uri": "res://material.tres"}
+{"uri":"res://material.tres"}
 ```
 
 ```json
-{"node": {"scene": "res://main.tscn", "path": "Sprite", "property": "material"}}
+{"node":{"scene":"res://main.tscn","path":"Sprite","property":"material"}}
 ```
 
-Do not combine the forms. Resource mutation uses an explicit named scope:
+For mutation tools that require scope, use a local node property or shared resource:
 
 ```json
-{"target": {"local": {"node": {"scene": "res://main.tscn", "path": "Sprite", "property": "material"}}}, "set": {"albedo": {"$type": "Color", "r": 1, "g": 0.5, "b": 0, "a": 1}}}
+{"target":{"local":{"scene":"res://main.tscn","path":"Sprite","property":"material"}},"set":{"albedo":{"$type":"Color","r":1,"g":0.5,"b":0,"a":1}}}
 ```
 
 ```json
-{"target": {"shared": {"uri": "res://material.tres"}}, "set": {"albedo": {"$type": "Color", "r": 1, "g": 0.5, "b": 0, "a": 1}}}
+{"target":{"shared":{"uri":"res://material.tres"}},"set":{"albedo":{"$type":"Color","r":1,"g":0.5,"b":0,"a":1}}}
 ```
 
-Read the returned users and import provenance before choosing shared scope.
+Read users and import provenance before choosing shared scope. Imported shared sources require detaching to an authored resource before mutation.
 
-## Source revisions
+## Attachments and connections
 
-`read_script` reads the current editor buffer or draft. Its `revision` describes that text, `disk_revision` describes the current file, and `base_disk_revision` identifies the file revision on which the buffer was based. `baseline_known=false` means the plugin first observed an already modified buffer without enough saved history to establish that baseline.
+Patch attachments are typed. A script attaches a source URI to a node; a shader attaches a source URI to an explicitly scoped ShaderMaterial target:
 
-An `external_change` or `baseline_unknown` conflict blocks automatic source persistence and validation. Scene saves also check for source conflicts because Godot can save linked source resources alongside a scene. Reconcile the editor buffer with the disk file through the editor, then read a fresh revision before editing or saving again. Returning to identical buffer and disk contents clears the conflict.
+```json
+{"attachments":[{"script":{"uri":"res://player.gd","node":{"scene":"res://main.tscn","path":"Player"}}},{"shader":{"uri":"res://toon.gdshader","target":{"local":{"scene":"res://main.tscn","path":"Player","property":"material"}}}}],"connections":{"connect":[],"disconnect":[]}}
+```
 
-`create_script` saves its new source before validation. A failed compile or attachment leaves that file in place. Repair the source using `edit_script`; each attachment failure in `failures` includes executable `recovery.tool` and `recovery.arguments` fields. After validation succeeds, use that recovery call to attach the existing script through `update_nodes`, or a shader through `update_resource`. Node scripts must derive from a compatible node type. Attachment changes have their own undo and save boundary.
+`connections.connect` and `connections.disconnect` are arrays of signal records (`from`, `signal`, `to`, `method`, and optional `binds`). Binding and connection work is reported separately from source validation and follows the operation phases.
 
 ## Runtime input
 
-Without `capture_uri`, input `position` and `relative` use viewport coordinates. With a capture URI, both use capture image pixels. Positions include the crop origin and resize conversion; relative movement applies only the scale. Mouse button state is maintained across events and calls, including explicit release and `release_after`. Wheel input is momentary.
+Without `capture_uri`, input `position` and `relative` use viewport coordinates. With a capture URI, both use capture image pixels. Positions include crop-origin and resize conversion; relative movement applies only the scale. Mouse button state persists across events and calls, including explicit release and `release_after`; wheel input is momentary.
 
-`send_input` may apply all requested events and then fail its condition wait or capture. Such a result retains `processed`, `held_inputs`, stage results and `failures`, with `status="partial"`, `complete=false`, and MCP `isError=true`. A requested condition timeout also produces this outcome. Retry the failed observation or capture rather than replaying the input sequence. A standalone `wait_for_condition` timeout remains an observation with `timed_out=true`.
+`send_input` can apply events before its condition wait or capture fails. The result retains `processed`, `held_inputs`, stage results, and `failures`, with `status="partial"` and `complete=false`; retry the failed observation or capture rather than replaying the input sequence. A standalone `wait_for_condition` timeout remains an observation with `timed_out=true`.
 
 ## Named mutation inputs
 
-Script edits select one change payload:
+Animation tracks, TileSet changes, input events, conditions, and node creation use one named property for each choice. Examples:
 
 ```json
-{"change": {"replace": {"uri": "res://main.gd", "if_revision": "<revision>", "source": "extends Node\n"}}}
+{"event":{"action":{"action":"ui_accept","pressed":true}}}
 ```
-
-Animation tracks, TileSet changes, input events, conditions, and node creation use the same JSON Schema rule: exactly one named property carries the payload. For example, a TileSet change is `{"add_physics_layer": {}}`, an input event is `{"event": {"action": {"action": "ui_accept", "pressed": true}}}`, and a wait condition is `{"property": {"node": {"run_id": "<run_id>", "path": "/root/Main"}, "property": "visible", "value": true}}`. TileSet targets select `local` or `shared` explicitly; `edit_animation` uses `local` or `shared` scope.
-
-Node creation selects exactly one source per node:
 
 ```json
-{"parent": {"scene": "res://main.tscn", "path": "."}, "nodes": [{"name": "Sprite", "source": {"class": "Sprite2D"}}]}
+{"property":{"node":{"run_id":"<run_id>","path":"/root/Main"},"property":"visible","value":true,"operator":"eq"}}
 ```
 
-Animation track changes select one operation such as `{"add": {"kind": "value", "path": "Sprite:position", "keys": []}}` inside a track. A TileSet batch keeps its named changes together for one staged commit and one Undo.
+```json
+{"parent":{"scene":"res://main.tscn","path":"."},"nodes":[{"name":"Sprite","source":{"class":"Sprite2D"}}]}
+```
+
+Node creation sources are exactly one of `class`, `instance`, or `duplicate`. TileSet and animation resource scope is explicit where the tool schema provides `local` or `shared`.
 
 ## Asset imports
 
-`import_assets` creates an operation record before writing files. A wait timeout returns its `operation_id`, applied `files_written` and `options_changed`, pending phase, and `undo_state="pending"`. Godot may continue importing after this response. Query the same operation instead of submitting the same paths again:
+`import_assets` creates an operation before writing or reimporting files. A timeout returns the same `operation_id`, applied `files_written` and `options_changed`, the pending phase, and `undo_state="pending"`; Godot may continue importing. Query that operation with `get_operation_result` instead of submitting the same paths again. Once importing settles, the operation records final changes and exposes an `edit_id` only when `undo_state="available"`. External changes during a pending import stop continuation with `IMPORT_CONFLICT`, preserve the file, and make Undo unavailable.
 
-```json
-{"operation_id": "<returned operation_id>"}
-```
+`get_context` reports pending source, diagnostic, and import jobs, along with project/editor/runtime state. Import executions are bounded per editor session; result snapshots share the operation retention limits.
 
-Pass this to `get_operation_result` for the detailed snapshot. `get_context` lists only pending import executions. Overlapping imports are rejected while the import manager owns those paths.
+`get_operation_result` returns the retained operation-time snapshot and separate current Undo, continuation and runtime state. Results are retained up to 64 records and 16 MiB per editor session, evicting completed records first; missing or expired records return explicit errors. Source continuations are bounded separately to 32 running or blocked bundles, and blocked continuations may expire before their receipt. Read bases retain up to 256 versions and 16 MiB. Editor restart clears this session state.
 
-Once the importer is quiet, the operation records its final changes and registers undo when needed. Use the returned `edit_id` only when `undo_state="available"`. Undo checks both editor history and finalized file contents. If a source changes externally during a pending operation, continuation stops with `IMPORT_CONFLICT`, preserves the file and reports undo as unavailable. This journal does not provide atomic rollback against concurrent external writers. The import manager retains only pending executions, with up to 32 active records; result snapshots follow the shared 64-record/16 MiB limits.
+## Diagnostics and runtime provenance
 
-## Diagnostics
+`get_diagnostics` validates current sources, unsaved source dependencies, and live settings. It is separate from historical logs. It may return an `operation_id` when work exceeds `wait_ms`; use `get_operation_result` to wait without repeating validation. Its bounded fingerprint cache may report `cache="compiled"` or `cache="reused"`. Counts are complete only when all requested coverage is fresh; pending or unavailable sources do not establish an error-free result. Snapshots exclude dot caches and symlinks and are bounded to 20,000 files and 512 MiB.
 
-`get_diagnostics.kinds` filters editor logs, runtime logs and source entries. Log filtering happens before `limit`; use the returned cursor for the next page. `has_more` indicates further entries matching the filter. Filtering source messages does not change their validation verdict.
+`get_logs` reads historical editor or selected-run entries with `kinds`, `since`, `limit`, and optional `run_id`. Historical log occurrence or silence does not establish the current source verdict or resolve a runtime problem.
 
-Validation snapshots exclude caches and symlinks without following the links. An unrelated symlink does not prevent checking regular sources. Sources whose dependencies cannot be resolved because paths were excluded report `state="unavailable"` and `valid=null`. Snapshots are limited to 20,000 files and 512 MiB. Truncated compiler output also produces an unavailable verdict; export results separately report `output_truncated`.
+`run_scene` accepts `save_uris`, optional `revisions`, and `restart`. `save_uris` explicitly lists documents to persist first; other unsaved documents block startup. Startup file hashes identify source state at launch but do not prove executed behavior. Runtime results include `source_provenance`; after edits they report `source_changed` and `restart_required` when a restart is needed. Use runtime observations, captures, or conditions to assess behavior.

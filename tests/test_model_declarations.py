@@ -14,7 +14,7 @@ from scripts.check_model_declarations import TOOLS, extract_declaration
 
 ROOT = Path(__file__).parents[1]
 FIXTURES = ROOT / "tests/fixtures/model_declarations"
-CURRENT = FIXTURES / "v11-actual.json"
+CURRENT = FIXTURES / "v12-actual.json"
 TSC = os.environ.get("TSC") or shutil.which("tsc")
 
 
@@ -37,10 +37,10 @@ def compile_capture(path, *args):
 
 
 @pytest.mark.skipif(TSC is None, reason="TypeScript compiler unavailable")
-def test_actual_v11_declarations_preserve_all_declared_payload_fields_and_requirements():
+def test_actual_v12_declarations_preserve_all_declared_payload_fields_and_requirements():
     result = compile_capture(CURRENT)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "across 10 actual declarations" in result.stdout
+    assert f"across {len(TOOLS)} actual declarations" in result.stdout
 
 
 @pytest.mark.skipif(TSC is None, reason="TypeScript compiler unavailable")

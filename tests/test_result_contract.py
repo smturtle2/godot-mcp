@@ -102,43 +102,54 @@ def test_strict_conditional_rules_reject_before_bridge_call(tmp_path, name, argu
 
 
 def test_mutation_receipt_and_detail_query_preserve_bridge_payload_without_reexecution(tmp_path):
-    payload = document_result(document("res://a.gd", "saved"))
+    uri = "res://a.gd"
+    source = "extends Node\n"
+    payload = document_result(document(uri, "saved"))
     payload["documents"][0].update(effect="created", save={"state": "saved"}, live_reload="succeeded")
     original = copy.deepcopy(payload)
-    snapshot = {"operation_id": payload["operation_id"], "tool": "create_script", "editor_epoch": "test", "recorded_at_usec": 5,
+    snapshot = {"operation_id": payload["operation_id"], "tool": "apply_script_changes", "editor_epoch": "test", "recorded_at_usec": 5,
                 "snapshot": True, "pending": False, "result": payload, "current_undo": {"edit_id": None, "available": False}}
-    bridge = FakeBridge(tmp_path, {"create_script": payload, "get_operation_result": snapshot})
-    result = run_call(tmp_path, {}, "create_script", {"uri": "res://a.gd", "source": "extends Node\n"}, bridge=bridge)
+    source_snapshot = {"editor_epoch": "test", "documents": [{"uri": uri, "revision": None, "disk_revision": None}]}
+    patch = "*** Begin Patch\n*** Add File: res://a.gd\n+extends Node\n*** End Patch"
+    bridge = FakeBridge(tmp_path, {"_source_snapshot": source_snapshot, "_apply_source_plan": payload, "get_operation_result": snapshot})
+    result = run_call(tmp_path, {}, "apply_script_changes", {"patch": patch}, bridge=bridge)
     assert not result.is_error and payload == original
     record = result.structured_content["documents"][0]
     assert "disk_revision" not in record and "entries" not in record["validation"]
     details = run_call(tmp_path, {}, "get_operation_result", {"operation_id": payload["operation_id"]}, bridge=bridge)
     assert not details.is_error and details.structured_content["result"] == original
-    assert bridge.calls == [("create_script", {"uri": "res://a.gd", "source": "extends Node\n"}), ("get_operation_result", {"operation_id": payload["operation_id"]})]
-    Draft202012Validator(SPECS["create_script"]["outputSchema"]).validate(result.structured_content)
+    assert [name for name, _ in bridge.calls] == ["_source_snapshot", "_apply_source_plan", "get_operation_result"]
+    plan_arguments = bridge.calls[1][1]
+    assert plan_arguments["documents"][0]["uri"] == uri
+    assert plan_arguments["documents"][0]["source"] == source
+    assert plan_arguments["editor_epoch"] == "test"
+    Draft202012Validator(SPECS["apply_script_changes"]["outputSchema"]).validate(result.structured_content)
     Draft202012Validator(SPECS["get_operation_result"]["outputSchema"]).validate(details.structured_content)
 
 
 def test_partial_create_preserves_applied_file_diagnostics_and_recovery(tmp_path):
-    record = document("res://broken.gd", "saved")
+    uri = "res://broken.gd"
+    record = document(uri, "saved")
     record.update(effect="created", save={"state": "saved"}, live_reload="not_attempted")
     record["validation"] = {"state": "invalid", "scope": "snapshot", "entries": [{"kind": "error", "message": "Syntax error", "line": 2}]}
     failure = {"phase": "validation", "code": "SOURCE_INVALID", "message": "Repair source.", "uri": record["uri"],
                "recovery": {"tool": "get_diagnostics", "arguments": {"uris": [record["uri"]]}}}
     payload = document_result(record, status="partial", failures=[failure])
     payload["undo"]["retained_files"] = [record["uri"]]
-    result = run_call(tmp_path, {"create_script": payload}, "create_script", {"uri": record["uri"], "source": "extends Node\n"})
+    source_snapshot = {"editor_epoch": "test", "documents": [{"uri": uri, "revision": None, "disk_revision": None}]}
+    patch = "*** Begin Patch\n*** Add File: res://broken.gd\n+extends Node\n*** End Patch"
+    result = run_call(tmp_path, {"_source_snapshot": source_snapshot, "_apply_source_plan": payload}, "apply_script_changes", {"patch": patch})
     assert result.is_error
     data = result.structured_content
     assert data["status"] == "partial" and "complete" not in data
     assert data["documents"][0]["state"] == "saved" and data["documents"][0]["validation"]["state"] == "invalid"
     assert data["failures"] == [failure] and data["undo"]["retained_files"] == [record["uri"]]
-    Draft202012Validator(SPECS["create_script"]["outputSchema"]).validate(data)
+    Draft202012Validator(SPECS["apply_script_changes"]["outputSchema"]).validate(data)
 
 
 def test_invalid_diagnostics_are_a_successful_result(tmp_path):
-    payload = {"entries": [], "sources": [validation_source("res://broken.gd", "invalid", False)],
-               "entries_are_history": True, "origin": "editor"}
+    payload = {"sources": [validation_source("res://broken.gd", "invalid", False)],
+               "current": True, "state": "invalid", "scope": "requested_sources", "coverage": {"complete": True}}
     result = run_call(tmp_path, {"get_diagnostics": payload}, "get_diagnostics", {"uris": ["res://broken.gd"]})
     assert not result.is_error
     assert result.structured_content["sources"][0]["state"] == "invalid"
@@ -154,7 +165,7 @@ def test_document_operation_status_maps_to_mcp_is_error(tmp_path, status):
 
 
 def test_tool_error_remains_an_error_response(tmp_path):
-    result = run_call(tmp_path, {"read_script": ToolError("FILE_NOT_FOUND", "missing")}, "read_script", {"uri": "res://missing.gd"})
+    result = run_call(tmp_path, {"read_scripts": ToolError("FILE_NOT_FOUND", "missing")}, "read_scripts", {"documents": [{"uri": "res://missing.gd"}]})
     assert result.is_error
     assert result.structured_content["error"]["code"] == "FILE_NOT_FOUND"
 

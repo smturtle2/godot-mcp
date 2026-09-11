@@ -112,7 +112,19 @@ NODE_SPEC = obj({"key": {**S, "description": "Optional unique logical identifier
                  "parent_key": {**S, "description": "Optional logical parent key; omitted means the tool parent."},
                  "name": {**S, "description": "Node name."}, "source": NODE_SOURCE, "properties": PROPS},
                 ("name", "source"))
-SOURCE_RESULT = {"uri": RES, "source": TEXT, "revision": S, "disk_revision": NULLABLE_STRING, "base_disk_revision": NULLABLE_STRING, "baseline_known": B, "conflict": enum("none", "external_change", "baseline_unknown"), "exists_on_disk": B, "unsaved": B, "buffer": S, "external_change": B, "symbols": arr({"type": "object", "additionalProperties": True}, 10000), "range": RANGE}
+REVISIONS = {"type": "object", "propertyNames": RES, "maxProperties": 100,
+             "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}
+SOURCE_RESULT = {"uri": RES, "source": TEXT, "revision": S, "disk_revision": NULLABLE_STRING, "base_disk_revision": NULLABLE_STRING, "baseline_known": B, "conflict": enum("none", "external_change", "baseline_unknown"), "exists_on_disk": B, "unsaved": B, "buffer": S, "external_change": B, "base_retained": B, "symbols": arr({"type": "object", "additionalProperties": True}, 10000), "symbols_truncated": B, "range": RANGE}
+SOURCE_PROVENANCE = obj({
+    "run_id": TEXT, "running": B, "state": enum("not_running", "unverified", "matches_startup", "source_changed"),
+    "startup_files": enum("unverified", "matched", "mismatched", "unavailable"),
+    "behavior": {"const": "unverified", "description": "File identity never proves behavior; assess the requested runtime observation separately."},
+    "scope": TEXT, "source_snapshot_id": S, "changed_uris": arr(RES, 20000),
+    "startup_changed_uris": arr(RES, 20000), "launch_changed_uris": arr(RES, 20000), "restart_required": B, "evidence": TEXT,
+}, ("run_id", "running", "state", "startup_files", "behavior", "scope"))
+RUN_OUTPUT = output_schema({"run_id": S, "scene": RES, "running": B, "runtime_connected": B,
+                            "runtime": {"type": "object", "additionalProperties": True}, "source_provenance": SOURCE_PROVENANCE},
+                           ("run_id", "scene", "running", "runtime_connected", "source_provenance"))
 NORMALIZED_VALIDATION = {"type": "object", "properties": {
     "state": enum("valid", "invalid", "pending", "unavailable"),
     "revision": {**NULLABLE_STRING, "description": "Checked revision when different from the containing document; omitted means that document revision."},
@@ -136,10 +148,10 @@ DOCUMENT_FAILURE = {"type": "object", "properties": {
     "details": {"type": "object", "additionalProperties": True}, "recovery": RECOVERY,
 }, "required": ["phase", "code", "message"], "additionalProperties": True}
 DOCUMENT_SNAPSHOT = output_schema({
-    "status": enum("completed", "partial", "failed"), "complete": B,
+    "status": enum("pending", "completed", "partial", "failed"), "complete": B,
     "documents": {"type": "array", "items": DOCUMENT_RECORD}, "failures": arr(DOCUMENT_FAILURE, 1000),
     "undo": UNDO_RESULT, "pending_save": {"type": "array", "items": S}, "pending": arr(S, 200),
-    "attachments": arr(obj({"scene": RES, "path": NODE_PATH, "resource": S, "property": S}), 50),
+    "attachments": arr({"type": "object", "additionalProperties": True}, 100),
     "validation_snapshot": S, "runtime_application": S, "save_observation": TEXT,
 }, ("status", "complete", "documents", "failures", "undo", "pending_save"))
 
@@ -149,39 +161,55 @@ DOCUMENT_RECEIPT_RECORD = obj({
         "disk_revision", "base_disk_revision", "baseline_known", "live_reload")},
     "validation": obj({key: NORMALIZED_VALIDATION["properties"][key] for key in ("state", "revision", "checked_state")}, ("state",)),
     "save": obj({key: DOCUMENT_SAVE_PROPERTIES[key] for key in ("state", "previous_uri", "target", "requested")}, ("state",)),
+    "merged": B,
 }, ("uri",))
 DOCUMENT_OUTPUT = output_schema({
-    "project": S, "operation_id": S, "status": enum("completed", "partial", "failed"),
+    "project": S, "operation_id": S, "status": enum("pending", "completed", "partial", "failed"),
     "details_retained": {**B, "description": "The detailed snapshot is currently retained; query get_operation_result before the session or retention window ends."},
     "documents": {"type": "array", "items": DOCUMENT_RECEIPT_RECORD},
     "failures": arr(DOCUMENT_FAILURE, 1000), "pending": arr(S, 200),
     "pending_save": {"type": "array", "items": S},
-    "undo": obj({"edit_id": NULLABLE_STRING, "scope": arr(S, 16), "retained_files": arr(S, 200)}),
-    "attachments": arr(obj({"scene": RES, "path": NODE_PATH, "resource": S, "property": S}), 50),
+    "undo": obj({"edit_id": NULLABLE_STRING, "scope": arr(S, 16), "retained_files": arr(S, 200),
+                 "steps": arr(obj({"edit_id": S, "scope": S}, ("edit_id", "scope")), 200)}),
+    "attachments": arr({"type": "object", "additionalProperties": True}, 100),
+    "connections": arr({"type": "object", "additionalProperties": True}, 100),
+    "phase": S, "phases": {"type": "object", "additionalProperties": S}, "resumable": B,
+    "runtime": SOURCE_PROVENANCE, "validation_snapshot": S,
+    "result_query_error": obj({"code": S, "message": TEXT}, ("code", "message")),
 }, ("operation_id", "status", "details_retained", "documents"))
 DOCUMENT_OUTPUT["oneOf"][0]["additionalProperties"] = False
 
-READ_SCRIPT_OUTPUT = output_schema(SOURCE_RESULT, ("uri", "source", "revision", "symbols"))
-DIAGNOSTICS_OUTPUT = output_schema({"entries": arr(DIAGNOSTIC_ENTRY, 1000), "sources": arr(VALIDATION_SOURCE, 200), "entries_are_history": B, "origin": S, "snapshot_id": S, "runtime": {"type": "object", "additionalProperties": True}}, ("entries", "sources", "entries_are_history", "origin"))
+READ_SCRIPTS_OUTPUT = output_schema({"documents": arr(obj(SOURCE_RESULT, ("uri", "source", "revision", "symbols", "base_retained")), 100), "base_revisions": REVISIONS, "editor_epoch": S}, ("documents", "base_revisions", "editor_epoch"))
+DIAGNOSTICS_OUTPUT = output_schema({"operation_id": S, "status": enum("pending", "completed"), "details_retained": B, "cache": enum("compiled", "reused"), "fingerprint": S, "sources": arr(VALIDATION_SOURCE, 200), "current": {"const": True}, "state": enum("valid", "invalid", "pending", "unavailable"), "scope": enum("requested_sources", "project_sources"), "coverage": {"type": "object", "additionalProperties": True}, "snapshot_id": S, "observed_errors": integer(), "observed_warnings": integer(), "error_count": integer(), "warning_count": integer(), "reason": S}, ("sources", "current", "state", "scope", "coverage"))
+LOGS_OUTPUT = output_schema({"entries": arr(DIAGNOSTIC_ENTRY, 1000), "history": {"const": True}, "current_verdict": {"const": False}, "origin": enum("editor", "runtime"), "run_id": S}, ("entries", "history", "current_verdict", "origin"))
 OP_FAILURE = obj({"phase": S, "code": S, "message": TEXT, "details": {"type": "object", "additionalProperties": True}}, ("phase", "code", "message", "details"))
 OPERATION_RESULT = {"status": enum("completed", "partial", "failed"), "complete": B, "failures": arr(OP_FAILURE, 200), "pending": arr(S, 200)}
-SEND_INPUT_OUTPUT = output_schema({**OPERATION_RESULT, "processed": integer(), "elapsed_ms": SAFE_COUNTER, "held_inputs": SAFE_COUNTER, "condition": {"type": "object", "additionalProperties": True}, "capture": {"type": "object", "additionalProperties": True}, "recovery": TEXT, "run_id": S, "observed_at_usec": SAFE_COUNTER, "frame": SAFE_COUNTER}, ("status", "complete", "failures", "pending", "processed", "elapsed_ms", "held_inputs"))
+SEND_INPUT_OUTPUT = output_schema({**OPERATION_RESULT, "source_provenance": SOURCE_PROVENANCE, "processed": integer(), "elapsed_ms": SAFE_COUNTER, "held_inputs": SAFE_COUNTER, "condition": {"type": "object", "additionalProperties": True}, "capture": {"type": "object", "additionalProperties": True}, "recovery": TEXT, "run_id": S, "observed_at_usec": SAFE_COUNTER, "frame": SAFE_COUNTER}, ("status", "complete", "failures", "pending", "processed", "elapsed_ms", "held_inputs"))
 IMPORT_ASSETS_OUTPUT = output_schema({**OPERATION_RESULT, "operation_id": S, "phase": enum("writing", "importing", "reimporting", "settling", "completed", "failed"), "saved": B, "files_written": arr(S, 500), "options_changed": arr(S, 500), "changed_paths": arr(S, 1500), "assets": arr(obj({"uri": RES, "imported": B, "resource": {"anyOf": [obj({"$type": {"const": "Resource"}, "uri": S, "class": S}, ("$type", "uri", "class")), {"type": "null"}]}, "preservation": TEXT}, ("uri", "imported", "resource", "preservation")), 500), "edit_id": NULLABLE_STRING, "undo_state": enum("pending", "available", "unavailable", "not_needed"), "undo": UNDO_RESULT}, ("status", "complete", "failures", "pending", "operation_id", "phase", "saved", "files_written", "options_changed", "changed_paths", "assets", "edit_id", "undo_state", "undo"))
 OPERATION_DETAIL_OUTPUT = output_schema({
     "operation_id": S, "tool": S, "editor_epoch": S, "recorded_at_usec": SAFE_COUNTER,
     "snapshot": {"const": True, "description": "Result as recorded at operation time; query live tools for current document state."},
     "pending": B,
-    "result": {"anyOf": [DOCUMENT_SNAPSHOT, IMPORT_ASSETS_OUTPUT]},
+    "result": {"anyOf": [DOCUMENT_SNAPSHOT, IMPORT_ASSETS_OUTPUT, DIAGNOSTICS_OUTPUT]},
+    "current_runtime": SOURCE_PROVENANCE,
+    "current_resume": obj({"available": B, "running": B, "reason": TEXT}, ("available",)),
     "current_undo": obj({"edit_id": NULLABLE_STRING, "available": B, "reason": TEXT}, ("edit_id", "available")),
 }, ("operation_id", "tool", "editor_epoch", "recorded_at_usec", "snapshot", "pending", "result", "current_undo"))
 
-SCRIPT_CHANGE = choice({
-    "create": obj({"uri": RES, "source": TEXT}, ("uri", "source")),
-    "replace": obj({"uri": RES, "if_revision": S, "source": TEXT}, ("uri", "if_revision", "source")),
-    "edit": obj({"uri": RES, "if_revision": S,
-                  "edits": arr(obj({"range": RANGE, "text": TEXT}, ("range", "text")), 200, 1)},
-                 ("uri", "if_revision", "edits")),
-}, "Choose exactly one script change: create, replace, or edit.")
+SOURCE_ATTACHMENT = choice({
+    "script": obj({"uri": RES, "node": REF}, ("uri", "node")),
+    "shader": obj({"uri": RES, "target": SCOPED_TARGET}, ("uri", "target")),
+}, "Attach one source from the patch: a script to a node, or a shader to an explicitly scoped ShaderMaterial.")
+SOURCE_CONNECTIONS = obj({"connect": arr(SIGNAL, 100), "disconnect": arr(SIGNAL, 100)})
+PATCH_OUTPUT = {"type": "object", "oneOf": [
+    *DOCUMENT_OUTPUT["oneOf"],
+    obj({"preview": {"const": True}, "documents": arr(obj({"uri": RES, "effect": enum("created", "updated"),
+          "revision": S, "current_revision": NULLABLE_STRING, "merged": B, "source": TEXT},
+          ("uri", "effect", "revision", "current_revision", "merged", "source")), 100),
+         "save_plan": {"type": "object", "additionalProperties": True}, "attachments": arr(SOURCE_ATTACHMENT, 100),
+         "connections": SOURCE_CONNECTIONS, "validation": {"const": "not_run"}, "editor_epoch": S, "project": S},
+        ("preview", "documents", "save_plan", "attachments", "connections", "validation", "editor_epoch")),
+]}
 
 
 TRACK_KEY = choice({
@@ -233,8 +261,8 @@ def tool(name, description, properties, required=(), *, read=False, destructive=
 TOOL_SPECS = [
     tool("install_plugin", "Install and enable the bundled plugin in an existing Godot project before connecting to the editor. Close the project in Godot first. Creates a rollback backup and registers project discovery.", {"project": {**S, "description": "Required absolute path to the directory containing project.godot."}}, ("project",)),
     tool("get_context", "Read project/engine/product/protocol versions, active scene, selection, unsaved documents, pending operation IDs and actual run state.", {"scope": enum("all", "project", "editor", "runtime")}, read=True),
-    tool("get_operation_result", "Read the retained detailed result of a document mutation or import without repeating it. Results are operation-time snapshots; current_undo reports current eligibility separately. The editor session retains at most 64 records and 16 MiB of serialized results, evicting completed records first. Expired, unknown, or oversized pending records return explicit errors.", {"operation_id": S}, ("operation_id",), read=True, output=OPERATION_DETAIL_OUTPUT),
-    tool("find_assets", "Search filenames, source text or symbols. Returns reusable res:// URIs and one-based source locations.", {"query": S, "mode": enum("name", "text", "symbol"), "types": arr(S, 32), "scope": {"type": "string", "pattern": "^res://"}, "limit": integer(1, 500)}, ("query",), read=True),
+    tool("get_operation_result", "Read retained results without repeating work; wait_ms optionally waits for running work. Snapshots preserve operation-time facts; current_undo/current_resume report live eligibility. The editor retains 64 results/16 MiB per session, evicting completed records first.", {"operation_id": S, "wait_ms": integer(0, 60000)}, ("operation_id",), read=True, output=OPERATION_DETAIL_OUTPUT),
+    tool("find_assets", "Search paths, live source text or symbols, including never-saved drafts. Source matches include their read revision. Pagination observes current state; skipped paths and bounds are explicit.", {"query": S, "mode": enum("name", "content", "symbol"), "types": arr(S, 32), "scope": {"type": "string", "pattern": "^res://"}, "limit": integer(1, 1000), "offset": integer(0, 1000000)}, ("query",), read=True),
     tool("get_class_info", "Inspect actual engine or project script classes, properties, methods and signals; optionally filter a member.", {"class": S, "member": S}, ("class",), read=True),
     tool("get_scene", "Inspect live scene nodes, unsaved values, connections, inheritance overrides and actual Control layout.", {"scene": RES, "path": NODE_PATH, "properties": {**arr(S), "description": "Property names: omitted means all editor properties when properties is included; [] means none."}, "include": {**arr(enum("properties", "overrides", "connections", "layout"), 4), "description": "Sections to include; omitted means structure only."}, "depth": integer(0, 32)}, read=True),
     tool("open_scene", "Open and activate a saved scene in the editor.", {"scene": RES}, ("scene",), idempotent=True),
@@ -242,15 +270,14 @@ TOOL_SPECS = [
     tool("create_nodes", "Create a flat related-node batch. Each node requires name and exactly one source choice: class, instance, or duplicate; parent_key links nodes within the batch. Returns actual names and references.", {"parent": REF, "nodes": arr(NODE_SPEC, 1000, 1)}, ("parent", "nodes")),
     tool("update_nodes", "Batch node properties, names and reparenting in one scene. Use references in the source scene to edit the original. Container-controlled layout is reported.", {"changes": arr(obj({"node": REF, "set": PROPS, "name": S, "parent": REF, "index": integer(0, 10000), "keep_global_transform": B}, ("node",)), 200, 1)}, ("changes",)),
     tool("delete_nodes", "Delete related nodes with undo; report affected persistent connections and NodePath references. Reject inherited members and overlapping selections.", {"nodes": arr(REF, 200, 1)}, ("nodes",), destructive=True),
-    tool("save_documents", "Save requested documents; Godot scene saves may also persist linked resources. Reports observed extra source saves, partial failures, and the separate undo boundary.", {"uris": arr({"type": "string", "pattern": "^(res://|godot://resources/).+"}, 200, 1), "save_as": {"type": "object", "additionalProperties": RES}}, ("uris",), idempotent=True, output=DOCUMENT_OUTPUT),
+    tool("save_documents", "Persist the listed documents. A scene save that could save other edited documents first returns SAVE_SCOPE_REQUIRED with their paths. Saving and source validation are independent; editor Undo does not restore saved disk files.", {"uris": arr({"type": "string", "pattern": "^(res://|godot://resources/).+"}, 200, 1), "save_as": {"type": "object", "additionalProperties": RES}}, ("uris",), idempotent=True, output=DOCUMENT_OUTPUT),
     tool("undo_edit", "Undo the latest MCP edit if its editor history has not changed since. Filesystem operations report their separate rollback scope.", {"edit_id": S}, ("edit_id",), destructive=True),
     tool("get_resource", "Read a resource selected by uri or by node scene/path/property, including nested references, known users and import provenance. Sharing scan covers open scenes and indexed project dependencies.", {"target": RESOURCE, "properties": arr(S), "depth": integer(0, 5)}, ("target",), read=True),
     tool("create_resource", "Create an in-memory resource, optionally attach it or save it. Returns a reusable resource URI.", {"class": S, "properties": PROPS, "assign_to": obj({"node": REF, "property": S}, ("node", "property")), "save_as": RES}, ("class",)),
     tool("update_resource", "Change a resource with an explicit local or shared target. Imported shared sources require detaching to an authored resource.", {"target": SCOPED_TARGET, "set": PROPS, "save_as": RES}, ("target", "set")),
-    tool("read_script", "Read the current source, including unsaved editor/store changes, with its revision and symbols. Ranges use one-based Unicode columns and exclusive ends.", {"uri": RES, "symbol": S, "range": RANGE}, ("uri",), read=True, output=READ_SCRIPT_OUTPUT),
-    tool("create_script", "Create and save the source before validation. If attachment fails, the source remains saved. Repair source with edit_script, then retry node script attachment with update_nodes (script property) or shader attachment with update_resource (ShaderMaterial shader property).", {"uri": RES, "source": TEXT, "attach_to": arr(REF, 50), "material": RESOURCE}, ("uri", "source"), output=DOCUMENT_OUTPUT),
-    tool("edit_script", "Apply a complete source replacement or one or more range edits at an exact revision; changes remain live even when compilation fails. The change selects exactly one replace or edit payload. Save explicitly to persist.", {"change": choice({"replace": obj({"uri": RES, "if_revision": S, "source": TEXT}, ("uri", "if_revision", "source")), "edit": obj({"uri": RES, "if_revision": S, "edits": arr(obj({"range": RANGE, "text": TEXT}, ("range", "text")), 200, 1)}, ("uri", "if_revision", "edits"))}, "Choose exactly one script edit: replace or edit.")}, ("change",), output=DOCUMENT_OUTPUT),
-    tool("apply_script_changes", "Apply a bounded batch of live source changes; save=true persists the batch afterward. Changes remain live on compile failure, attachments are outside this batch, and game hot reload is not promised. Validation snapshots exclude caches/symlinks and are limited to 512 MiB and 20,000 files.", {"changes": arr(SCRIPT_CHANGE, 100, 1), "save": {"type": "boolean", "default": False, "description": "Persist the whole batch after application; false leaves live drafts."}}, ("changes",), output=DOCUMENT_OUTPUT),
+    tool("read_scripts", "Read one or more current editor sources/drafts, their revisions and symbols. Pass updated paths' base_revisions to apply_script_changes. Ranges use one-based Unicode columns and exclusive ends. Read bases are retained for three-way merge within 256 versions/16 MiB per editor session.", {"documents": arr(obj({"uri": RES, "range": RANGE, "symbol": S}, ("uri",)), 100, 1)}, ("documents",), read=True, output=READ_SCRIPTS_OUTPUT),
+    tool("apply_script_changes", "Apply one context patch to live editor sources. Use *** Begin Patch, *** Add File: res://..., *** Update File: res://..., @@ context hunks and *** End Patch; hunk lines use space/-/+. Up to 100 sources; exact context, no whitespace fuzz. Independent concurrent edits merge against retained read bases; conflicts change nothing. One operation coordinates persistence, snapshot validation, source attachment and signals; pending work is queried by ID. Compilation failures preserve applied source.", {"patch": {**TEXT, "minLength": 1}, "base_revisions": {**REVISIONS, "description": "Exactly the updated paths' revisions from read_scripts/find_assets; omit for an all-new patch."}, "save": {**B, "default": False, "description": "Persist this bundle's sources and binding owners; false leaves live changes. Saving does not imply valid source."}, "attachments": arr(SOURCE_ATTACHMENT, 100), "connections": SOURCE_CONNECTIONS, "preview": {**B, "description": "Return the same guarded text plan and save scope without applying or validating it."}, "wait_ms": {**integer(0, 15000), "default": 1500}}, ("patch",), output=PATCH_OUTPUT),
+    tool("resume_script_changes", "Continue the unfinished phases of a source bundle without replaying its patch or successful bindings. After repairing source, provide every original source's current read revision. Target changes still cause conflicts. Continuations are bounded to 32 running/blocked bundles per editor session.", {"operation_id": S, "revisions": REVISIONS, "wait_ms": {**integer(0, 15000), "default": 1500}}, ("operation_id",), output=DOCUMENT_OUTPUT),
     tool("update_signals", "Connect/disconnect persistent signal handlers with optional binds in one scene. Missing handler code is reported.", {"connect": arr(SIGNAL), "disconnect": arr(SIGNAL)}, idempotent=True),
     tool("get_animation", "Inspect animation tracks/keys or AnimationTree states, transitions, blend connections and parameter values.", {"node": REF, "animation": S}, ("node",), read=True),
     tool("edit_animation", "Create or edit an AnimationPlayer animation and typed tracks/keys. Local scope isolates a player's shared library; shared scope is explicit.", {"player": REF, "name": S, "create": B, "length": {"type": "number", "exclusiveMinimum": 0}, "loop": B, "tracks": arr(TRACK), "scope": enum("local", "shared")}, ("player", "name")),
@@ -262,9 +289,10 @@ TOOL_SPECS = [
     tool("inspect_runtime", "Read the actual game's scene tree or node properties with run ID and observation time.", {"node": RUN_REF, "properties": arr(S), "depth": integer(0, 10)}, ("node",), read=True),
     tool("capture_viewport", "Return actual PNG pixels plus viewport/capture coordinates. Headless rendering returns an explicit unsupported error.", {"viewport": obj({"kind": enum("game", "editor_2d", "editor_3d"), "run_id": S, "index": integer(0, 3)}, ("kind",)), "rect": obj({"origin": I2, "size": SIZE}, ("origin", "size")), "max_width": integer(1, 4096), "max_height": integer(1, 4096)}, ("viewport",), read=True),
     tool("wait_for_condition", "Observe scene/node/property/signal conditions until satisfied or a bounded timeout; returns last observation.", {"run_id": S, "condition": CONDITION, "timeout_ms": integer(1, 60000), "poll_ms": integer(1, 1000)}, ("run_id", "condition"), read=True),
-    tool("get_diagnostics", "Read a fresh snapshot validation of requested sources plus historical editor log entries; unsaved dependencies are included. Snapshot validation excludes caches/symlinks and is limited to 512 MiB and 20,000 files.", {"uris": arr(RES), "revision": S, "run_id": S, "kinds": arr(enum("error", "warning", "log"), 3), "since": SAFE_COUNTER, "limit": integer(1, 1000)}, read=True, output=DIAGNOSTICS_OUTPUT),
+    tool("get_diagnostics", "Validate current sources and unsaved dependencies; no historical logs. Returns an operation_id immediately when validation exceeds wait_ms (default 1500); use get_operation_result to wait without repeating work. Omitted uris selects authored project sources, excluding this plugin. Counts describe only fresh, complete coverage; pending/unavailable is not error-free. Snapshots exclude dot caches/symlinks and are limited to 512 MiB/20,000 files.", {"uris": arr(RES, 200), "kinds": arr(enum("error", "warning"), 2), "wait_ms": integer(0, 15000)}, read=True, output=DIAGNOSTICS_OUTPUT),
+    tool("get_logs", "Read historical editor or selected-run log entries with cursor pagination. Log occurrence or silence does not establish whether current source is valid or a runtime problem is resolved.", {"run_id": S, "kinds": arr(enum("error", "warning", "log"), 3), "since": SAFE_COUNTER, "limit": integer(1, 1000)}, read=True, output=LOGS_OUTPUT),
     tool("sample_performance", "Measure supported Performance monitors over time; include units, sample count and conditions. Unknown metrics are rejected.", {"run_id": S, "duration_ms": integer(1, 60000), "metrics": arr(enum("process_ms", "physics_ms", "fps", "memory_bytes", "objects", "draw_calls", "primitives", "video_memory_bytes"), 8, 1)}, ("run_id", "duration_ms", "metrics"), read=True),
-    tool("run_scene", "Start an editor-launched game and wait for the actual runtime helper handshake. Save/restart are explicit (default false).", {"scene": RES, "save": B, "restart": B}),
+    tool("run_scene", "Start a game with a recorded startup source snapshot and runtime handshake. save_uris explicitly lists documents to persist first; other unsaved documents block startup. Optional revisions guard the expected sources. Startup file evidence does not prove changed behavior; use runtime observations.", {"scene": RES, "save_uris": arr(RES, 200), "revisions": REVISIONS, "restart": B}, output=RUN_OUTPUT),
     tool("stop_game", "Stop the specified run, release injected input, and confirm process termination.", {"run_id": S}, ("run_id",), idempotent=True),
     tool("send_input", "Send timestamped key/mouse/touch/action events through Godot input; each event selects exactly one named kind payload. Capture position and relative coordinates use capture pixels. Timeouts retain applied effects; retry failed observation or capture rather than repeating the mutation.", {"run_id": S, "events": arr(INPUT, 1000, 1), "capture_uri": S, "wait_for": CONDITION, "timeout_ms": integer(1, 60000), "capture_after": B, "release_after": B}, ("run_id", "events"), output=SEND_INPUT_OUTPUT),
     tool("inspect_debugger", "Read suspended DAP stack/scopes/variables; frame handles become stale on continue. GDScript is supported.", {"run_id": S, "frame_id": integer(), "pause_id": S, "variables_reference": integer()}, ("run_id",), read=True),
@@ -278,6 +306,6 @@ TOOL_SPECS = [
     tool("export_build", "Export with a real Godot preset via CLI and verify the output exists. Export success does not imply artifact execution.", {"preset": S, "output": FILE, "debug": B, "timeout_ms": integer(1000, 180000)}, ("preset", "output")),
 ]
 # Canonical input contracts and published tool schemas are the same definitions.
-DOCUMENT_TOOLS = {"create_script", "edit_script", "apply_script_changes", "save_documents"}
+DOCUMENT_TOOLS = {"apply_script_changes", "resume_script_changes", "save_documents"}
 SPECS = {spec["name"]: spec for spec in TOOL_SPECS}
 assert len(SPECS) == len(TOOL_SPECS) == 45

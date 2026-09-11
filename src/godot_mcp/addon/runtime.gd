@@ -3,6 +3,7 @@ extends Node
 const Codec = preload("res://addons/godot_mcp/codec.gd")
 const LogBuffer = preload("res://addons/godot_mcp/log_buffer.gd")
 const OperationResult = preload("res://addons/godot_mcp/operation_result.gd")
+const SourceManifest = preload("res://addons/godot_mcp/source_manifest.gd")
 var held: Dictionary = {}
 var held_mouse_buttons: int = 0
 var captures: Dictionary = {}
@@ -19,7 +20,7 @@ func _ready() -> void:
 	logs = LogBuffer.new()
 	OS.add_logger(logs)
 	EngineDebugger.register_message_capture("godot_mcp", _capture)
-	EngineDebugger.send_message("godot_mcp:ready", [{"pid": OS.get_process_id(), "renderer": RenderingServer.get_current_rendering_method(), "display": DisplayServer.get_name()}])
+	EngineDebugger.send_message("godot_mcp:ready", [{"pid": OS.get_process_id(), "renderer": RenderingServer.get_current_rendering_method(), "display": DisplayServer.get_name(), "source_startup": SourceManifest.startup()}])
 
 func _exit_tree() -> void:
 	if active:
