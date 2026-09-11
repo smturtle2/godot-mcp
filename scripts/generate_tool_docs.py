@@ -11,7 +11,7 @@ def render() -> str:
     sys.path.insert(0, str(root / "src"))
     from godot_mcp.catalog import TOOL_SPECS
 
-    lines = ["# Godot MCP tool reference", "", "Generated from [`TOOL_SPECS`](../src/godot_mcp/catalog.py). The canonical JSON input schemas are served by MCP `tools/list`; this page keeps the discoverable catalog compact.", "", "`install_plugin` can install and enable the project plugin before an editor connection exists. After opening the project, use `get_context` for live editor state.", "", "| Tool | Description |", "|---|---|"]
+    lines = ["# Godot MCP tool reference", "", "Generated from [`TOOL_SPECS`](../src/godot_mcp/catalog.py). MCP `tools/list` publishes the named input schemas; strict server validation remains authoritative.", "", "Document and import mutations return a compact receipt with an `operation_id`. Use `get_operation_result(operation_id)` for the retained operation-time snapshot and current Undo eligibility; never rerun a mutation to retrieve details. Records are bounded to 64 entries and 16 MiB of serialized result bytes.", "", "`install_plugin` can install and enable the project plugin before an editor connection exists. After opening the project, use `get_context` for live editor state.", "", "| Tool | Description |", "|---|---|"]
     for spec in TOOL_SPECS:
         lines.append(f"| `{spec['name']}` | {spec['description']} |")
     return "\n".join(lines)

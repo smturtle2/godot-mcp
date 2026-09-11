@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -14,7 +13,41 @@ from mcp.server.stdio import stdio_server
 
 from .bridge import EditorBridge, ToolError, validate_values
 from .catalog import SPECS, TOOL_SPECS
+from .input_validation import validate_arguments
+from .result_projection import project_result
 from .version import PRODUCT_VERSION
+
+SERVER_INSTRUCTIONS = (
+    "For editor work, call get_context first; select an absolute project. Prefer MCP for live edits. "
+    "Use live refs and current run_id. Check revisions; save before play. After a mutation timeout, "
+    "inspect state before retrying. For direct edits, check unsaved state, then reload and validate. "
+    "Godot values use $type and named fields. Pass these rules to delegates."
+)
+
+
+def _tool_result(name: str, result: dict, *, project: str | None = None) -> types.CallToolResult:
+    result = project_result(name, result)
+    if project is not None:
+        result.setdefault("project", project)
+    images = []
+
+    def extract(value):
+        if isinstance(value, dict):
+            data = value.pop("image_base64", None)
+            if data:
+                images.append(types.ImageContent(type="image", mime_type="image/png", data=data))
+            for child in value.values():
+                extract(child)
+        elif isinstance(value, list):
+            for child in value:
+                extract(child)
+
+    extract(result)
+    incomplete = "error" in result or result.get("status") in {"partial", "failed"} or result.get("complete") is False
+    return types.CallToolResult(
+        content=[types.TextContent(type="text", text=json.dumps(result, ensure_ascii=False, separators=(",", ":"))), *images],
+        structured_content=result, is_error=incomplete,
+    )
 
 
 def create_server(project: Path | None = None, bridge: EditorBridge | None = None, *, home: Path | None = None) -> Server:
@@ -44,9 +77,7 @@ def create_server(project: Path | None = None, bridge: EditorBridge | None = Non
             if params.name not in SPECS:
                 raise ToolError("UNKNOWN_TOOL", f"Unknown tool: {params.name}")
             arguments = dict(params.arguments or {})
-            error = next(validators[params.name].iter_errors(arguments), None)
-            if error:
-                raise ToolError("INVALID_ARGUMENT", error.message, {"path": list(error.absolute_path)})
+            validate_arguments(validators[params.name], arguments)
             if params.name == "install_plugin":
                 target = Path(arguments["project"])
                 if not target.is_absolute():
@@ -57,11 +88,11 @@ def create_server(project: Path | None = None, bridge: EditorBridge | None = Non
                     result = await asyncio.to_thread(initialize_project, target, install_home)
                 except (OSError, ValueError) as exc:
                     raise ToolError("INSTALL_FAILED", str(exc)) from exc
-                return types.CallToolResult(content=[types.TextContent(type="text", text=json.dumps(result))], structured_content=result)
+                return _tool_result(params.name, result)
             selector = arguments.pop("project", None)
             if directory and params.name == "get_context" and not selector and not selected_project and len(directory.projects()) != 1:
                 result = directory.context()
-                return types.CallToolResult(content=[types.TextContent(type="text", text=json.dumps(result))], structured_content=result)
+                return _tool_result(params.name, result)
             active_bridge = fixed_bridge or directory.select(selector or selected_project)
             active_project = active_bridge.project
             if fixed_bridge and selector and Path(selector).resolve() != active_project:
@@ -76,33 +107,14 @@ def create_server(project: Path | None = None, bridge: EditorBridge | None = Non
                 result = await active_bridge.call(params.name, arguments)
             if directory:
                 selected_project = str(active_project)
-            result = copy.deepcopy(result)
-            result.setdefault("project", str(active_project))
-            images = []
-
-            def extract(value):
-                if isinstance(value, dict):
-                    data = value.pop("image_base64", None)
-                    if data:
-                        images.append(types.ImageContent(type="image", mime_type="image/png", data=data))
-                    for child in value.values():
-                        extract(child)
-                elif isinstance(value, list):
-                    for child in value:
-                        extract(child)
-
-            extract(result)
-            incomplete = result.get("status") in {"partial", "failed"} or result.get("complete") is False
-            return types.CallToolResult(content=[types.TextContent(type="text", text=json.dumps(result, ensure_ascii=False)), *images],
-                                        structured_content=result, is_error=incomplete)
+            return _tool_result(params.name, result, project=str(active_project))
         except ToolError as exc:
             result = exc.result()
-            return types.CallToolResult(content=[types.TextContent(type="text", text=json.dumps(result))],
-                                        structured_content=result, is_error=True)
+            return _tool_result(params.name, result)
 
     return Server("Godot MCP", version=PRODUCT_VERSION, on_list_tools=list_tools,
                   on_call_tool=call_tool, lifespan=lifespan,
-                  instructions="For a project without the plugin, call install_plugin with its absolute path while Godot is closed, then ask the user to open it. Call get_context first for editor work. When several projects are open, select an absolute project path. Prefer Godot MCP for scene, script, resource, and project-setting changes while the editor is open: direct edits can miss unsaved changes, bypass editor undo, and leave loaded resources stale until reimport/reload, while MCP handles live state and reports revision, diagnostics, save, and undo details where supported. Direct editing remains appropriate when MCP is unsupported or offline; check unsaved state first, then verify reimport/reload and editor diagnostics. Share these editing considerations with delegated agents. Tagged Godot values use $type (vectors, Color, transforms, NodePath, StringName, Resource, or Packed*Array) and named components. Use live scene/resource references for editor edits and current run_id for gameplay. Save explicitly before play. After timeout inspect state before retrying a mutation. Tool errors describe recoverable conditions.")
+                  instructions=SERVER_INSTRUCTIONS)
 
 
 async def serve(project: Path | None = None, *, home: Path | None = None) -> None:

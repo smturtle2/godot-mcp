@@ -93,36 +93,43 @@ func edit_animation(p: Dictionary) -> Dictionary:
 	var original_library: AnimationLibrary = player.get_animation_library(library_name) if player.has_animation_library(library_name) else null
 	var original: Animation = original_library.get_animation(name) if original_library and original_library.has_animation(name) else null
 	if not original and not p.get("create", false): return host.fail("ANIMATION_NOT_FOUND", "Set create=true to create this animation.")
-	var scope: String = p.get("scope", "node")
+	var scope: String = p.get("scope", "local")
 	if scope == "shared" and original and (original.resource_path.contains(".godot/imported") or FileAccess.file_exists(original.resource_path.get_slice("::", 0) + ".import")):
-		return host.fail("IMPORTED_RESOURCE", "Use node scope to preserve an authored copy of an imported animation.")
+		return host.fail("IMPORTED_RESOURCE", "Use local scope to preserve an authored copy of an imported animation.")
 	var animation: Animation = original.duplicate(true) if original else Animation.new()
 	if p.has("length"): animation.length = float(p.length)
 	if p.has("loop"): animation.loop_mode = Animation.LOOP_LINEAR if p.loop else Animation.LOOP_NONE
-	for spec: Dictionary in p.get("tracks", []):
-		var op: String = spec.get("op", "update" if spec.has("index") else "add")
+	for raw_spec: Dictionary in p.get("tracks", []):
+		var selected: Dictionary = host.select_case(raw_spec, ["add", "update", "remove"], "track")
+		if selected.has("error"): return selected
+		var op: String = selected.kind
+		var spec: Dictionary = selected.value
 		var index: int = int(spec.get("index", -1))
 		if op != "add" and (index < 0 or index >= animation.get_track_count()): return host.fail("INVALID_TRACK", "Track index is outside the animation.")
 		if op == "remove":
 			animation.remove_track(index)
 			continue
-		var type: int = track_type(str(spec.get("kind", ""))) if spec.has("kind") else (animation.track_get_type(index) if index >= 0 else -1)
+		var type: int = track_type(str(spec.get("kind", ""))) if op == "add" else animation.track_get_type(index)
 		if type < 0: return host.fail("INVALID_TRACK", "A new track requires a supported kind.")
 		if op == "add": index = animation.add_track(type)
-		elif animation.track_get_type(index) != type: return host.fail("INVALID_TRACK", "Replace a track to change its kind.")
 		if spec.has("path"): animation.track_set_path(index, NodePath(spec.path))
 		if spec.has("enabled"): animation.track_set_enabled(index, spec.enabled)
 		if spec.has("interpolation"):
 			animation.track_set_interpolation_type(index, {"nearest": Animation.INTERPOLATION_NEAREST, "linear": Animation.INTERPOLATION_LINEAR, "cubic": Animation.INTERPOLATION_CUBIC}[spec.interpolation])
-		if spec.get("replace_keys", false):
+		if op == "update" and spec.get("replace_keys", false):
 			for old: int in range(animation.track_get_key_count(index) - 1, -1, -1): animation.track_remove_key(index, old)
-		for key: Dictionary in spec.get("keys", []):
-			var time: float = float(key.get("time", 0))
-			if key.get("remove", false):
+		for raw_key: Dictionary in spec.get("keys", []):
+			var key_case: Dictionary = host.select_case(raw_key, ["set", "remove"], "key")
+			if key_case.has("error"): return key_case
+			var key: Dictionary = key_case.value
+			var key_op: String = key_case.kind
+			if not key.has("time"): return host.fail("INVALID_KEY", "Keys need a time.")
+			var time: float = float(key.time)
+			if key_op == "remove":
 				var at: int = animation.track_find_key(index, time, Animation.FIND_MODE_APPROX)
 				if at >= 0: animation.track_remove_key(index, at)
 				continue
-			if not key.has("value"): return host.fail("INVALID_KEY", "Keys need a value or remove=true.")
+			if not key.has("value"): return host.fail("INVALID_KEY", "A set key requires value.")
 			var value: Variant = host.decode(key.value)
 			if type in [Animation.TYPE_POSITION_3D, Animation.TYPE_SCALE_3D] and not value is Vector3: return host.fail("INVALID_KEY", "Position/scale keys require Vector3.")
 			if type == Animation.TYPE_ROTATION_3D and not value is Quaternion: return host.fail("INVALID_KEY", "Rotation keys require Quaternion.")
@@ -148,7 +155,7 @@ func edit_animation(p: Dictionary) -> Dictionary:
 	result.scope = scope
 	result.length = animation.length
 	result.track_count = animation.get_track_count()
-	result.reimport_persistence = "authored library copy in this scene" if scope == "node" else "shared authored library; save all owning documents"
+	result.reimport_persistence = "authored library copy in this scene" if scope == "local" else "shared authored library; save all owning documents"
 	return result
 
 func make_graph_node(spec: Dictionary) -> Dictionary:
@@ -271,7 +278,7 @@ func edit_graph(p: Dictionary) -> Dictionary:
 	var result: Dictionary = host.finish_edit(tree, "Edit animation graph")
 	result.graph = graph_info(root)
 	result.parameters = host.encode(parameters(tree))
-	result.scope = "node"
+	result.scope = "local"
 	return result
 
 func preview(p: Dictionary) -> Dictionary:

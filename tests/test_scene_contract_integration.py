@@ -25,9 +25,9 @@ async def test_flat_create_and_get_scene_contract(editor):
         created = await client.call_tool("create_nodes", {
             "parent": {"scene": "res://main.tscn", "path": "."},
             "nodes": [
-                {"key": "child", "parent_key": "parent", "name": "Child", "class": "Node2D"},
-                {"key": "parent", "name": "Parent", "class": "Node2D"},
-                {"key": "grandchild", "parent_key": "child", "name": "Grandchild", "class": "Node2D"},
+                {"key": "child", "parent_key": "parent", "name": "Child", "source": {"class": "Node2D"}},
+                {"key": "parent", "name": "Parent", "source": {"class": "Node2D"}},
+                {"key": "grandchild", "parent_key": "child", "name": "Grandchild", "source": {"class": "Node2D"}},
             ],
         })
         assert not created.is_error
@@ -59,11 +59,11 @@ async def test_flat_create_and_get_scene_contract(editor):
         assert shallow.structured_content["depth_truncated"]
 
         for nodes, code, name in [
-            ([{"name": "MissingParent", "parent_key": "absent", "class": "Node2D"}], "UNKNOWN_PARENT_KEY", "MissingParent"),
-            ([{"key": "same", "name": "DuplicateA", "class": "Node2D"},
-              {"key": "same", "name": "DuplicateB", "class": "Node2D"}], "DUPLICATE_KEY", "DuplicateA"),
-            ([{"key": "cycle_a", "parent_key": "cycle_b", "name": "CycleA", "class": "Node2D"},
-              {"key": "cycle_b", "parent_key": "cycle_a", "name": "CycleB", "class": "Node2D"}], "PARENT_CYCLE", "CycleA"),
+            ([{"name": "MissingParent", "parent_key": "absent", "source": {"class": "Node2D"}}], "UNKNOWN_PARENT_KEY", "MissingParent"),
+            ([{"key": "same", "name": "DuplicateA", "source": {"class": "Node2D"}},
+              {"key": "same", "name": "DuplicateB", "source": {"class": "Node2D"}}], "DUPLICATE_KEY", "DuplicateA"),
+            ([{"key": "cycle_a", "parent_key": "cycle_b", "name": "CycleA", "source": {"class": "Node2D"}},
+              {"key": "cycle_b", "parent_key": "cycle_a", "name": "CycleB", "source": {"class": "Node2D"}}], "PARENT_CYCLE", "CycleA"),
         ]:
             rejected = await client.call_tool("create_nodes", {
                 "parent": {"scene": "res://main.tscn", "path": "."}, "nodes": nodes,

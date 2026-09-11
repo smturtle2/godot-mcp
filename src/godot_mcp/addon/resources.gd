@@ -118,17 +118,16 @@ func create_resource(p: Dictionary) -> Dictionary:
 	return result
 
 func update_resource(p: Dictionary) -> Dictionary:
-	var scope: String = p.get("scope", "")
-	if scope not in ["node", "shared"]: return host.fail("SCOPE_REQUIRED", "Choose node or shared scope.")
-	var target: Dictionary = host.resolve_resource_target(p.get("target", {}), scope)
+	var target: Dictionary = host.resolve_scoped_resource_target(p.get("target", {}))
 	if target.has("error"): return target
+	var scope: String = target.scope
 	var resource: Resource = target.resource
-	if scope == "shared" and imported(resource): return host.fail("IMPORTED_RESOURCE", "Detach imported resources with node scope, optionally saving as an authored .tres file.")
+	if scope == "shared" and imported(resource): return host.fail("IMPORTED_RESOURCE", "Detach imported resources with local scope, optionally saving as an authored .tres file.")
 	var property_plan: Dictionary = host.plan_property_changes(resource, p.get("set", {}))
 	if property_plan.has("error"): return property_plan
 	var before_users: Dictionary = users(resource)
 	var result: Dictionary
-	if scope == "node":
+	if scope == "local":
 		var node: Node = target.node
 		var replacement: Resource = resource.duplicate(true)
 		replacement.resource_local_to_scene = true
@@ -147,5 +146,5 @@ func update_resource(p: Dictionary) -> Dictionary:
 	result.resource = host.encode(resource)
 	result.properties = {}
 	for key: String in p.get("set", {}): result.properties[key] = host.encode(resource.get(key))
-	result.reimport_persistence = "authored copy; save its scene/resource" if scope == "node" else "authored shared resource; save explicitly"
+	result.reimport_persistence = "authored copy; save its scene/resource" if scope == "local" else "authored shared resource; save explicitly"
 	return result

@@ -74,18 +74,22 @@ func apply_resource(target: Resource, value: Resource) -> void:
 	EditorInterface.set_object_edited(target, true)
 
 func edit_tileset(p: Dictionary) -> Dictionary:
-	var scope: String = p.get("scope", "node")
-	var target: Dictionary = host.resolve_resource_target(p.get("target", {}), scope, "TileSet")
+	var target: Dictionary = host.resolve_scoped_resource_target(p.get("target", {}), "TileSet")
 	if target.has("error"): return target
+	var scope: String = target.scope
 	var original: TileSet = target.resource
-	if scope == "shared" and FileAccess.file_exists(original.resource_path.get_slice("::", 0) + ".import"): return host.fail("IMPORTED_RESOURCE", "Detach an imported TileSet with node scope.")
+	if scope == "shared" and FileAccess.file_exists(original.resource_path.get_slice("::", 0) + ".import"): return host.fail("IMPORTED_RESOURCE", "Detach an imported TileSet with local scope.")
 	var ts: TileSet = original.duplicate(true)
 	var keys: Dictionary = {}
 	var changed: Array = []
-	for change: Dictionary in p.get("changes", []):
-		var op: String = change.get("op", "")
+	for raw_change: Dictionary in p.get("changes", []):
+		var selected: Dictionary = host.select_case(raw_change, ["add_atlas", "define_tile", "remove_tile", "add_physics_layer", "collision", "add_terrain_set", "terrain"], "change")
+		if selected.has("error"): return selected
+		var op: String = selected.kind
+		var change: Dictionary = selected.value
 		if op == "add_atlas":
-			var texture: Texture2D = host.resource_uri(str(change.get("texture", ""))) as Texture2D
+			if not change.has("texture"): return host.fail("INVALID_TEXTURE", "add_atlas requires texture.")
+			var texture: Texture2D = host.resource_uri(str(change.texture)) as Texture2D
 			if not texture: return host.fail("INVALID_TEXTURE", "Import a Texture2D before adding an atlas.")
 			var source := TileSetAtlasSource.new()
 			source.texture = texture
@@ -119,11 +123,24 @@ func edit_tileset(p: Dictionary) -> Dictionary:
 					ts.set_terrain_color(set, id, color)
 			changed.append({"op": op, "terrain_set": set})
 			continue
-		var source_id: int = int(keys.get(change.get("source_key", ""), change.get("source_id", -1)))
+		if not change.has("source"): return host.fail("SOURCE_NOT_FOUND", "This operation requires a source.")
+		var source_ref: Variant = change.source
+		if not source_ref is Dictionary or source_ref.size() != 1 or (not source_ref.has("id") and not source_ref.has("key")):
+			return host.fail("INVALID_ARGUMENT", "source requires exactly one of id or key.")
+		var source_id: int = -1
+		if source_ref.has("id"):
+			if not (source_ref.id is int or source_ref.id is float) or float(source_ref.id) != floor(float(source_ref.id)) or float(source_ref.id) < 0: return host.fail("SOURCE_NOT_FOUND", "Source id must be a nonnegative integer.")
+			source_id = int(source_ref.id)
+		else:
+			if not source_ref.key is String: return host.fail("SOURCE_NOT_FOUND", "Source key must be a string.")
+			var source_key: String = str(source_ref.key)
+			if not keys.has(source_key): return host.fail("SOURCE_NOT_FOUND", "Atlas source key does not exist.")
+			source_id = int(keys[source_key])
 		if not ts.has_source(source_id): return host.fail("SOURCE_NOT_FOUND", "Atlas source ID/key does not exist.")
 		var source: TileSetAtlasSource = ts.get_source(source_id) as TileSetAtlasSource
 		if not source: return host.fail("INVALID_SOURCE", "This operation requires an atlas source.")
-		var at: Vector2i = coord(change.get("atlas", {}))
+		if not change.has("atlas"): return host.fail("INVALID_TILE", "This operation requires atlas coordinates.")
+		var at: Vector2i = coord(change.atlas)
 		var alternative: int = int(change.get("alternative", 0))
 		if op == "remove_tile":
 			if source.has_tile(at):
@@ -140,9 +157,10 @@ func edit_tileset(p: Dictionary) -> Dictionary:
 		if not source.has_tile(at) or not source.has_alternative_tile(at, alternative): return host.fail("TILE_NOT_FOUND", "Tile/alternative must exist before editing it.")
 		var data: TileData = source.get_tile_data(at, alternative)
 		if op == "collision":
+			if not change.has("polygons") or not change.polygons is Array: return host.fail("INVALID_VALUE", "collision requires polygons.")
 			var layer: int = int(change.get("physics_layer", 0))
-			if layer >= ts.get_physics_layers_count(): return host.fail("PHYSICS_LAYER_NOT_FOUND", "Add the TileSet physics layer first.")
-			var polygons: Array = change.get("polygons", [])
+			if layer < 0 or layer >= ts.get_physics_layers_count(): return host.fail("PHYSICS_LAYER_NOT_FOUND", "Add the TileSet physics layer first.")
+			var polygons: Array = change.polygons
 			data.set_collision_polygons_count(layer, polygons.size())
 			for i: int in polygons.size():
 				var polygon := PackedVector2Array()
@@ -150,21 +168,31 @@ func edit_tileset(p: Dictionary) -> Dictionary:
 				data.set_collision_polygon_points(layer, i, polygon)
 				data.set_collision_polygon_one_way(layer, i, change.get("one_way", false))
 		elif op == "terrain" or op == "define_tile":
-			if change.has("terrain_set") or change.has("terrain"):
-				var set: int = int(change.get("terrain_set", 0))
-				var terrain: int = int(change.get("terrain", -1))
-				if set < 0 or set >= ts.get_terrain_sets_count() or terrain >= ts.get_terrains_count(set): return host.fail("TERRAIN_NOT_FOUND", "Terrain set/id does not exist.")
-				data.terrain_set = set
-				data.terrain = terrain
-			for bit: String in change.get("peering_bits", {}):
-				var terrain: int = int(change.peering_bits[bit])
-				if not bit.is_valid_int() or data.terrain_set < 0 or not ts.is_valid_terrain_peering_bit(data.terrain_set, int(bit)) or terrain >= ts.get_terrains_count(data.terrain_set): return host.fail("INVALID_PEERING_BIT", "Peering bit or terrain ID is invalid for the terrain set.")
-				data.set_terrain_peering_bit(int(bit), terrain)
-			if change.has("probability"): data.probability = float(change.probability)
+			if change.has("set"):
+				var set_spec: Variant = change.set
+				if not set_spec is Dictionary or set_spec.is_empty(): return host.fail("INVALID_VALUE", "Tile set must contain at least one terrain setting.")
+				for set_key: String in set_spec:
+					if set_key not in ["terrain_set", "terrain", "peering_bits", "probability"]: return host.fail("INVALID_VALUE", "Unknown tile terrain setting: " + set_key)
+				if set_spec.has("terrain_set"):
+					var terrain_set: int = int(set_spec.terrain_set)
+					if terrain_set < 0 or terrain_set >= ts.get_terrain_sets_count(): return host.fail("TERRAIN_NOT_FOUND", "Terrain set does not exist.")
+					data.terrain_set = terrain_set
+				if set_spec.has("terrain"):
+					var terrain_id: int = int(set_spec.terrain)
+					if data.terrain_set < 0 or terrain_id < -1 or terrain_id >= ts.get_terrains_count(data.terrain_set): return host.fail("TERRAIN_NOT_FOUND", "Terrain id does not exist.")
+					data.terrain = terrain_id
+				if set_spec.has("peering_bits"):
+					if not set_spec.peering_bits is Dictionary: return host.fail("INVALID_PEERING_BIT", "Peering bits must be a dictionary.")
+					for bit: String in set_spec.peering_bits:
+						var terrain_id: int = int(set_spec.peering_bits[bit])
+						if not bit.is_valid_int() or int(bit) < 0 or int(bit) > TileSet.CELL_NEIGHBOR_TOP_RIGHT_CORNER or data.terrain_set < 0 or not data.is_valid_terrain_peering_bit(int(bit)) or terrain_id < -1 or terrain_id >= ts.get_terrains_count(data.terrain_set): return host.fail("INVALID_PEERING_BIT", "Peering bit or terrain ID is invalid for the terrain set.")
+						data.set_terrain_peering_bit(int(bit), terrain_id)
+				if set_spec.has("probability"):
+					data.probability = float(set_spec.probability)
 		else: return host.fail("INVALID_OPERATION", "Unknown TileSet operation.")
 		changed.append({"op": op, "source_id": source_id, "atlas": {"x": at.x, "y": at.y}, "alternative": alternative})
 	var result: Dictionary
-	if scope == "node":
+	if scope == "local":
 		var node: Node = target.node
 		result = host.commit_changes([{"object": node, "property": target.property, "before": original, "after": ts}], host.scene_root(target.scene), "Edit TileSet")
 	else:

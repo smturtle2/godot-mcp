@@ -55,7 +55,7 @@ async def mcp_smoke(executable: Path, project: Path, env: dict[str, str], home: 
                 return {"tools": len(listed.tools), "context": context, "plugin_installed_by_mcp": True}
             created = await client.call_tool("create_nodes", {
                 "parent": {"scene": "res://main.tscn", "path": "."},
-                "nodes": [{"name": "SmokeChild", "class": "Node2D", "properties": {
+                "nodes": [{"name": "SmokeChild", "source": {"class": "Node2D"}, "properties": {
                     "position": {"$type": "Vector2", "x": 12, "y": 34}
                 }}]
             })

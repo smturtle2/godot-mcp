@@ -24,7 +24,11 @@ func dispatch(method: String, p: Dictionary) -> Dictionary:
 	var requested: String = str(p.get("run_id", p.get("node", {}).get("run_id", p.get("viewport", {}).get("run_id", ""))))
 	if requested != run_id or not ready or not EditorInterface.is_playing_scene(): return host.fail("STALE_RUN", "The requested run is not active.")
 	for key: String in ["condition", "wait_for"]:
-		if p.has(key) and p[key].has("node") and p[key].node.run_id != run_id: return host.fail("STALE_RUN", "The condition refers to another run.")
+		if p.has(key):
+			var condition: Dictionary = p[key]
+			if condition.has("node") and condition.node.get("node", {}).get("run_id", "") != run_id: return host.fail("STALE_RUN", "The condition refers to another run.")
+			if condition.has("property") and condition.property.get("node", {}).get("run_id", "") != run_id: return host.fail("STALE_RUN", "The condition refers to another run.")
+			if condition.has("signal") and condition.signal.get("node", {}).get("run_id", "") != run_id: return host.fail("STALE_RUN", "The condition refers to another run.")
 	var result: Dictionary = await host.debugger.request(method, p)
 	result.run_id = run_id
 	return result

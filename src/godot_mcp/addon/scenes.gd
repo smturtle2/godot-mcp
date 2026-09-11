@@ -182,15 +182,18 @@ func build_node(spec: Dictionary, budget: Array[int]) -> Dictionary:
 	if budget[0] < 0: return host.fail("LIMIT_EXCEEDED", "A subtree may contain at most 1000 nodes.")
 	var name: String = spec.get("name", "Node")
 	if name.is_empty() or name != name.validate_node_name(): return host.fail("INVALID_NAME", "Node name contains invalid characters.")
+	var selected: Variant = spec.get("source")
+	if not selected is Dictionary or selected.size() != 1:
+		return host.fail("INVALID_ARGUMENT", "source must select exactly one class, instance, or duplicate.")
 	var node: Node
-	if spec.has("instance"):
-		var source: PackedScene = host.resource_uri(str(spec.instance)) as PackedScene
+	if selected.has("instance") and selected.instance is String:
+		var source: PackedScene = host.resource_uri(selected.instance) as PackedScene
 		if source: node = source.instantiate(PackedScene.GEN_EDIT_STATE_INSTANCE)
-	elif spec.has("duplicate"):
-		var source: Node = host.resolve_node(spec.duplicate)
+	elif selected.has("duplicate") and selected.duplicate is Dictionary:
+		var source: Node = host.resolve_node(selected.duplicate)
 		if source: node = source.duplicate()
-	else:
-		var cls: String = spec.get("class", "Node")
+	elif selected.has("class") and selected["class"] is String:
+		var cls: String = selected["class"]
 		if ClassDB.can_instantiate(cls) and ClassDB.is_parent_class(cls, "Node"):
 			node = ClassDB.instantiate(cls) as Node
 	if not node: return host.fail("INVALID_NODE", "Node type or instance/duplicate source cannot be constructed.")

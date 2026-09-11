@@ -53,7 +53,7 @@ EXTERNAL = 'extends Node\nvar number: int = 3\n'
 
 async def setup_buffer(bridge):
     result = await bridge.call('create_script', {'uri': URI, 'source': BASE})
-    assert result['saved'], result
+    assert result['documents'][0]['save']['state'] == 'saved', result
     await bridge.call('_test_source_buffer', {'uri': URI, 'action': 'open'})
 
 
@@ -69,12 +69,12 @@ async def test_manual_edit_conflict_blocks_source_and_scene_save(editor):
     assert info['base_disk_revision'] == hashlib.sha256(BASE.encode()).hexdigest()
     assert info['baseline_known'] and info['conflict'] == 'external_change'
     saved = await bridge.call('save_documents', {'uris': [URI]})
-    assert not saved['complete'] and not saved['saved'], saved
+    assert saved['status'] == 'failed' and not saved['complete'] and saved['documents'][0]['save']['state'] == 'failed', saved
     assert path.read_text() == EXTERNAL
     scene = bridge.project / 'main.tscn'
     scene_before = scene.read_bytes()
     saved_scene = await bridge.call('save_documents', {'uris': ['res://main.tscn']})
-    assert not saved_scene['complete'] and saved_scene['failed'][0]['conflicts'], saved_scene
+    assert saved_scene['status'] == 'failed' and not saved_scene['complete'] and saved_scene['failures'][0]['details']['conflicts'], saved_scene
     assert scene.read_bytes() == scene_before and path.read_text() == EXTERNAL
 
 
@@ -87,7 +87,8 @@ async def test_already_dirty_buffer_requires_known_baseline_and_undo_reconciles(
     info = await bridge.call('read_script', {'uri': URI})
     assert not info['baseline_known'] and info['conflict'] == 'baseline_unknown', info
     saved = await bridge.call('save_documents', {'uris': [URI]})
-    assert not saved['complete'] and (bridge.project / 'manual.gd').read_text() == BASE
+    assert saved['status'] == 'failed' and not saved['complete'] and saved['documents'][0]['save']['state'] == 'failed'
+    assert (bridge.project / 'manual.gd').read_text() == BASE
     await bridge.call('_test_source_buffer', {'uri': URI, 'action': 'undo'})
     info = await bridge.call('read_script', {'uri': URI})
     assert info['source'] == BASE and not info['external_change'] and not info['unsaved'], info

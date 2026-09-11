@@ -51,4 +51,4 @@ You can also run `godot-mcp init` from the project folder. For updates, close li
 
 ## Reference
 
-[44 tools](docs/tools.md) · [State and recovery](docs/workflows.md) · [Setup and troubleshooting](docs/installation.md) · [Development](docs/development.md) · [EUPL-1.2](LICENSE)
+[45 tools](docs/tools.md) · [State and recovery](docs/workflows.md) · [Setup and troubleshooting](docs/installation.md) · [Development](docs/development.md) · [EUPL-1.2](LICENSE)

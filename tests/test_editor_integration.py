@@ -40,7 +40,7 @@ async def test_editor_authoring(editor):
         assert not result.is_error
     diagnostics = await call(b, 'get_diagnostics')
     assert not any('Unexpected NUL character' in entry['message'] for entry in diagnostics['entries']), diagnostics
-    r = await call(b, 'create_nodes', parent=ref(), nodes=[{'name': n, 'class': c} for n, c in [('Sprite', 'Sprite2D'), ('Anim', 'AnimationPlayer'), ('Tree', 'AnimationTree'), ('Tiles', 'TileMapLayer')]])
+    r = await call(b, 'create_nodes', parent=ref(), nodes=[{'name': n, 'source': {'class': c}} for n, c in [('Sprite', 'Sprite2D'), ('Anim', 'AnimationPlayer'), ('Tree', 'AnimationTree'), ('Tiles', 'TileMapLayer')]])
     assert len(r['nodes']) == 4
     r = await call(b, 'update_nodes', changes=[{'node': ref('Sprite'), 'set': {'position': vector(12, 34)}}])
     assert r['nodes'][0]['properties']['position']['x'] == 12
@@ -50,12 +50,12 @@ async def test_editor_authoring(editor):
     assert scene['unsaved']
     assert (await call(b, 'get_class_info', **{'class': 'Node2D', 'member': 'position'}))['properties']
     await call(b, 'create_resource', **{'class': 'GradientTexture2D', 'assign_to': {'node': ref('Sprite'), 'property': 'texture'}})
-    r = await call(b, 'get_resource', target={'node': ref('Sprite'), 'property': 'texture'}, properties=['width'])
+    r = await call(b, 'get_resource', target={'node': {'scene': 'res://main.tscn', 'path': 'Sprite', 'property': 'texture'}}, properties=['width'])
     original = r['uri']
-    r = await call(b, 'update_resource', target={'node': ref('Sprite'), 'property': 'texture'}, set={'width': 32}, scope='node')
+    r = await call(b, 'update_resource', target={'local': {'scene': 'res://main.tscn', 'path': 'Sprite', 'property': 'texture'}}, set={'width': 32})
     assert r['resource']['uri'] != original
     assert r['properties']['width'] == 32
-    await call(b, 'edit_animation', player=ref('Anim'), name='move', create=True, length=1, tracks=[{'op': 'add', 'kind': 'value', 'path': 'Sprite:position', 'keys': [{'time': 0, 'value': vector(0, 0)}, {'time': 1, 'value': vector(100, 0)}]}])
+    await call(b, 'edit_animation', player=ref('Anim'), name='move', create=True, length=1, tracks=[{'add': {'kind': 'value', 'path': 'Sprite:position', 'keys': [{'set': {'time': 0, 'value': vector(0, 0)}}, {'set': {'time': 1, 'value': vector(100, 0)}}]}}])
     assert len((await call(b, 'get_animation', node=ref('Anim'), animation='move'))['animations'][0]['tracks']) == 1
     pose = await call(b, 'preview_animation', player=ref('Anim'), name='move', time=.5, capture=False)
     assert pose['pose'][0]['value']['x'] == 50 and pose['restored']
@@ -71,7 +71,7 @@ async def test_editor_authoring(editor):
     atlas.write_text('<svg xmlns="http://www.w3.org/2000/svg" width="32" height="16"><rect width="32" height="16" fill="#138cf2"/></svg>')
     r = await call(b, 'import_assets', files=[{'source': atlas.as_uri(), 'destination': 'res://art/atlas.svg'}])
     assert r['assets'][0]['imported']
-    await call(b, 'edit_tileset', target={'node': ref('Tiles'), 'property': 'tile_set'}, changes=[{'op': 'add_atlas', 'key': 'a', 'texture': 'res://art/atlas.svg', 'tile_size': {'x': 16, 'y': 16}}, {'op': 'define_tile', 'source_key': 'a', 'atlas': {'x': 0, 'y': 0}}, {'op': 'add_physics_layer'}, {'op': 'collision', 'source_key': 'a', 'atlas': {'x': 0, 'y': 0}, 'polygons': [[{'x': -8, 'y': -8}, {'x': 8, 'y': -8}, {'x': 8, 'y': 8}]]}])
+    await call(b, 'edit_tileset', target={'local': {'scene': 'res://main.tscn', 'path': 'Tiles', 'property': 'tile_set'}}, changes=[{'add_atlas': {'key': 'a', 'texture': 'res://art/atlas.svg', 'tile_size': {'x': 16, 'y': 16}}}, {'define_tile': {'source': {'key': 'a'}, 'atlas': {'x': 0, 'y': 0}}}, {'add_physics_layer': {}}, {'collision': {'source': {'key': 'a'}, 'atlas': {'x': 0, 'y': 0}, 'polygons': [[{'x': -8, 'y': -8}, {'x': 8, 'y': -8}, {'x': 8, 'y': 8}]]}}])
     r = await call(b, 'paint_tiles', layer=ref('Tiles'), region={'origin': {'x': 0, 'y': 0}, 'size': {'x': 3, 'y': 2}, 'tile': {'source_id': 0, 'atlas': {'x': 0, 'y': 0}}})
     assert r['count'] == 6
     assert len((await call(b, 'get_tilemap', layer=ref('Tiles')))['cells']) == 6
@@ -85,7 +85,7 @@ async def test_editor_authoring(editor):
     assert 'res://art/atlas.svg' in (b.project / 'main.tscn').read_text()
     await asyncio.sleep(.3)
     await call(b, 'create_scene', uri='res://base.tscn', root_class='Node2D', root_name='Base')
-    await call(b, 'create_nodes', parent=ref(scene='res://base.tscn'), nodes=[{'name': 'Child', 'class': 'Node2D'}])
+    await call(b, 'create_nodes', parent=ref(scene='res://base.tscn'), nodes=[{'name': 'Child', 'source': {'class': 'Node2D'}}])
     await call(b, 'save_documents', uris=['res://base.tscn'])
     await call(b, 'create_scene', uri='res://derived.tscn', inherits='res://base.tscn', root_name='Derived')
     assert (await call(b, 'get_scene', scene='res://derived.tscn', properties=['position']))['inherited_source'] == 'res://base.tscn'
@@ -93,17 +93,20 @@ async def test_editor_authoring(editor):
         await call(b, 'delete_nodes', nodes=[ref('Child', 'res://derived.tscn')])
     await call(b, 'open_scene', scene='res://main.tscn')
     r = await call(b, 'create_script', uri='res://behavior.gd', source='extends Node2D\n\nfunc react(value: int) -> void:\n\tposition.x = value\n', attach_to=[ref('Sprite')])
-    assert r['attached'] == [ref('Sprite')]
+    assert r['attachments'] == [ref('Sprite')]
+    assert r['documents'][0]['validation']['state'] == 'valid'
     r = await call(b, 'read_script', uri='res://behavior.gd')
     revision = r['revision']
-    r = await call(b, 'edit_script', uri='res://behavior.gd', if_revision=revision, edits=[{'range': {'start': {'line': 4, 'column': 15}, 'end': {'line': 4, 'column': 20}}, 'text': 'value * 2'}])
-    assert r['diagnostics']['valid']
+    r = await call(b, 'edit_script', change={'edit': {'uri': 'res://behavior.gd', 'if_revision': revision, 'edits': [{'range': {'start': {'line': 4, 'column': 15}, 'end': {'line': 4, 'column': 20}}, 'text': 'value * 2'}]}})
+    assert r['documents'][0]['validation']['state'] == 'valid'
+    assert r['undo']['edit_id']
     with pytest.raises(ToolError):
-        await call(b, 'edit_script', uri='res://behavior.gd', if_revision=revision, edits=[{'range': {'start': {'line': 1, 'column': 1}, 'end': {'line': 1, 'column': 1}}, 'text': '# stale\n'}])
+        await call(b, 'edit_script', change={'edit': {'uri': 'res://behavior.gd', 'if_revision': revision, 'edits': [{'range': {'start': {'line': 1, 'column': 1}, 'end': {'line': 1, 'column': 1}}, 'text': '# stale\n'}]}})
     assert (await call(b, 'read_script', uri='res://behavior.gd'))['unsaved']
     await call(b, 'update_signals', connect=[{'from': ref(), 'signal': 'health_changed', 'to': ref('Sprite'), 'method': 'react'}])
     saved = await call(b, 'save_documents', uris=['res://main.tscn', 'res://behavior.gd'])
     assert saved['complete'], saved
+    assert all(document['save']['state'] == 'saved' for document in saved['documents']), saved
     r = await call(b, 'delete_nodes', nodes=[ref('Sprite')])
     assert r['affected_references']
     await call(b, 'undo_edit', edit_id=r['edit_id'])
@@ -125,17 +128,17 @@ async def test_editor_authoring(editor):
 
 async def test_resource_target_validation_and_json_refs(editor):
     b, _tmp = editor
-    await call(b, 'create_nodes', parent=ref(), nodes=[{'name': 'Sprite', 'class': 'Sprite2D'}])
+    await call(b, 'create_nodes', parent=ref(), nodes=[{'name': 'Sprite', 'source': {'class': 'Sprite2D'}}])
     await call(b, 'create_resource', **{'class': 'GradientTexture2D', 'assign_to': {'node': ref('Sprite'), 'property': 'texture'}})
-    current = await call(b, 'get_resource', target={'node': ref('Sprite'), 'property': 'texture'}, properties=['width'])
+    current = await call(b, 'get_resource', target={'node': {'scene': 'res://main.tscn', 'path': 'Sprite', 'property': 'texture'}}, properties=['width'])
     with pytest.raises(ToolError):
-        await call(b, 'get_resource', target={'uri': current['uri'], 'node': ref('Sprite'), 'property': 'texture'})
+        await call(b, 'get_resource', target={'uri': current['uri'], 'node': {'scene': 'res://main.tscn', 'path': 'Sprite', 'property': 'texture'}})
     with pytest.raises(ToolError):
-        await call(b, 'update_resource', target={'uri': current['uri']}, set={'width': 32}, scope='node')
-    unchanged = await call(b, 'get_resource', target={'node': ref('Sprite'), 'property': 'texture'}, properties=['width'])
+        await call(b, 'update_resource', target={'local': {'scene': 'res://main.tscn', 'path': 'Sprite', 'property': 'texture'}, 'shared': {'uri': current['uri']}}, set={'width': 32})
+    unchanged = await call(b, 'get_resource', target={'node': {'scene': 'res://main.tscn', 'path': 'Sprite', 'property': 'texture'}}, properties=['width'])
     assert unchanged['properties']['width'] == current['properties']['width']
-    updated = await call(b, 'update_resource', target={'node': ref('Sprite'), 'property': 'texture'}, set={'width': 32}, scope='node')
-    assert updated['affected'][0] == {'node': ref('Sprite'), 'property': 'texture'}
+    updated = await call(b, 'update_resource', target={'local': {'scene': 'res://main.tscn', 'path': 'Sprite', 'property': 'texture'}}, set={'width': 32})
+    assert updated['affected'][0] == {'node': {**ref('Sprite'), 'property': 'texture'}}
 
 
 async def test_runtime_and_debugger(editor, monkeypatch):
@@ -148,13 +151,13 @@ async def test_runtime_and_debugger(editor, monkeypatch):
         run = r['run_id']
         node = {'run_id': run, 'path': '/root/Main'}
         assert (await call(b, 'inspect_runtime', node=node, properties=['health']))['node']['properties']['health'] == 3
-        result = await call(b, 'send_input', run_id=run, events=[{'type': 'action', 'action': 'ui_accept', 'pressed': True}, {'type': 'action', 'action': 'ui_accept', 'pressed': False, 'at_ms': 50}], wait_for={'type': 'property', 'node': node, 'property': 'health', 'value': 2}, timeout_ms=2000)
+        result = await call(b, 'send_input', run_id=run, events=[{'event': {'action': {'action': 'ui_accept', 'pressed': True}}}, {'at_ms': 50, 'event': {'action': {'action': 'ui_accept', 'pressed': False}}}], wait_for={'property': {'node': node, 'property': 'health', 'value': 2}}, timeout_ms=2000)
         assert result['processed'] == 2 and result['condition']['satisfied']
-        signal_result = await call(b, 'send_input', run_id=run, events=[{'type': 'key', 'key': 'Enter', 'pressed': True}, {'type': 'key', 'key': 'Enter', 'pressed': False, 'at_ms': 30}], wait_for={'type': 'signal', 'node': node, 'signal': 'health_changed'}, timeout_ms=1000)
+        signal_result = await call(b, 'send_input', run_id=run, events=[{'event': {'key': {'key': 'Enter', 'pressed': True}}}, {'at_ms': 30, 'event': {'key': {'key': 'Enter', 'pressed': False}}}], wait_for={'signal': {'node': node, 'signal': 'health_changed'}}, timeout_ms=1000)
         assert signal_result['condition']['satisfied']
-        mismatch = await call(b, 'wait_for_condition', run_id=run, condition={'type': 'property', 'node': node, 'property': 'health', 'value': 'wrong type'}, timeout_ms=20)
+        mismatch = await call(b, 'wait_for_condition', run_id=run, condition={'property': {'node': node, 'property': 'health', 'value': 'wrong type'}}, timeout_ms=20)
         assert mismatch['timed_out']
-        condition = await call(b, 'wait_for_condition', run_id=run, condition={'type': 'property', 'node': node, 'property': 'health', 'value': 1}, timeout_ms=2000)
+        condition = await call(b, 'wait_for_condition', run_id=run, condition={'property': {'node': node, 'property': 'health', 'value': 1}}, timeout_ms=2000)
         assert condition['satisfied']
         sample = await call(b, 'sample_performance', run_id=run, duration_ms=100, metrics=['process_ms', 'objects'])
         assert sample['samples'] > 0 and sample['metrics']['objects']['mean'] > 0

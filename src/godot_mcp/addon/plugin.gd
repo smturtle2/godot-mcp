@@ -5,6 +5,7 @@ const Version = preload("res://addons/godot_mcp/version.gd")
 const Codec = preload("res://addons/godot_mcp/codec.gd")
 const ResourceTarget = preload("res://addons/godot_mcp/resource_target.gd")
 const PropertyEdits = preload("res://addons/godot_mcp/property_edits.gd")
+const OperationRecords = preload("res://addons/godot_mcp/operation_records.gd")
 const LogBuffer = preload("res://addons/godot_mcp/log_buffer.gd")
 const Scenes = preload("res://addons/godot_mcp/scenes.gd")
 const Documents = preload("res://addons/godot_mcp/documents.gd")
@@ -27,6 +28,7 @@ var modules: Array[RefCounted] = []
 var documents: RefCounted
 var resource_targets: RefCounted
 var property_edits: RefCounted
+var operation_records: RefCounted
 var assets: RefCounted
 var runtime: RefCounted
 var debugger: EditorDebuggerPlugin
@@ -49,6 +51,7 @@ func _enter_tree() -> void:
 	documents = Documents.new(self)
 	resource_targets = ResourceTarget.new(self)
 	property_edits = PropertyEdits.new(self)
+	operation_records = OperationRecords.new(self)
 	runtime = Runtime.new(self)
 	assets = Assets.new(self)
 	modules = [Scenes.new(self), documents, Resources.new(self), Animations.new(self), Tiles.new(self), assets, runtime]
@@ -215,10 +218,21 @@ func dispatch(method: String, p: Dictionary) -> Dictionary:
 	match method:
 		"get_context": return context(p)
 		"undo_edit": return undo_edit(p)
+		"get_operation_result": return operation_records.get_result(str(p.get("operation_id", "")))
 		"_debug_state": return debugger.state()
 		"_breakpoints": return documents.breakpoints(p)
 	for module: RefCounted in modules:
 		if module.handles(method):
+			if method in ["create_script", "edit_script", "apply_script_changes", "save_documents"]:
+				var reservation: Dictionary = operation_records.begin(method)
+				if reservation.has("error"): return reservation
+				var result: Dictionary = await module.dispatch(method, p)
+				if result.has("error") or result.is_empty():
+					operation_records.discard(reservation.operation_id)
+					return result
+				result.operation_id = reservation.operation_id
+				result.details_retained = operation_records.publish(reservation.operation_id, result)
+				return result
 			return await module.dispatch(method, p)
 	return fail("UNKNOWN_TOOL", "Unknown tool: " + method)
 
@@ -226,7 +240,6 @@ func fail(code: String, message: String, details: Dictionary = {}) -> Dictionary
 	return {"error": {"code": code, "message": message, "details": details}}
 
 func context(p: Dictionary) -> Dictionary:
-	if p.get("scope") == "operations": return assets.imports.state(str(p.get("operation_id", "")))
 	var selected: Array = []
 	for node: Node in EditorInterface.get_selection().get_selected_nodes():
 		selected.append(node_ref(node))
@@ -305,6 +318,20 @@ func resolve_resource(target: Dictionary) -> Resource:
 func resolve_resource_target(target: Dictionary, scope: String = "", expected_class: String = "Resource") -> Dictionary:
 	return resource_targets.resolve(target, scope, expected_class)
 
+func resolve_scoped_resource_target(target: Dictionary, expected_class: String = "Resource") -> Dictionary:
+	var selected: Dictionary = select_case(target, ["local", "shared"], "target")
+	if selected.has("error"): return selected
+	var selector: Dictionary = {"node": selected.value} if selected.kind == "local" else selected.value
+	return resource_targets.resolve(selector, selected.kind, expected_class)
+
+func select_case(value: Variant, names: Array, field: String) -> Dictionary:
+	if not value is Dictionary or value.size() != 1:
+		return fail("INVALID_ARGUMENT", field + " must select exactly one of: " + ", ".join(names))
+	var kind: String = str(value.keys()[0])
+	if kind not in names or not value[kind] is Dictionary:
+		return fail("INVALID_ARGUMENT", field + " requires a named object payload: " + ", ".join(names))
+	return {"kind": kind, "value": value[kind]}
+
 func encode(value: Variant) -> Variant:
 	return Codec.encode(value, register_resource)
 
@@ -355,15 +382,34 @@ func commit_changes(changes: Array, context_object: Object, label: String) -> Di
 	add_changes(changes)
 	return finish_edit(context_object, label)
 
-func undo_edit(p: Dictionary) -> Dictionary:
+func _undo_error(edit_id: Variant) -> Dictionary:
 	if edits.is_empty(): return fail("NO_EDIT", "No recorded MCP edit to undo.")
 	var edit: Dictionary = edits.back()
-	if edit.edit_id != p.get("edit_id"): return fail("STALE_EDIT", "Only the most recent MCP edit is eligible for undo.")
+	if edit.edit_id != edit_id: return fail("STALE_EDIT", "Only the most recent MCP edit is eligible for undo.")
 	var history := get_undo_redo().get_history_undo_redo(edit.history_id)
-	if history.get_version() != edit.history_version:
+	if not history or history.get_version() != edit.history_version:
 		return fail("EDIT_CONFLICT", "Editor history changed after this MCP edit.")
 	for guard: Dictionary in edit.guards:
 		if not guard.check.call(): return fail("EDIT_CONFLICT", "A document changed after this MCP edit.")
+	return {}
+
+func undo_edit(p: Dictionary) -> Dictionary:
+	var error: Dictionary = _undo_error(p.get("edit_id"))
+	if not error.is_empty(): return error
+	var edit: Dictionary = edits.back()
+	var history := get_undo_redo().get_history_undo_redo(edit.history_id)
 	history.undo()
 	edits.pop_back()
 	return {"undone": edit.edit_id, "label": edit.label, "saved": false}
+
+func undo_availability(edit_id: Variant) -> Dictionary:
+	var result: Dictionary = {"edit_id": edit_id, "available": false}
+	if edit_id == null:
+		result.reason = "No editor undo was registered."
+		return result
+	var error: Dictionary = _undo_error(edit_id)
+	if not error.is_empty():
+		result.reason = error.error.message
+		return result
+	result.available = true
+	return result

@@ -7,7 +7,6 @@ var host: EditorPlugin
 var files: RefCounted
 var operations: Dictionary = {}
 var wait_timeout_ms: int = 30000
-var sequence: int = 0
 var stopped: bool = false
 
 func _init(editor_host: EditorPlugin, file_operations: RefCounted) -> void:
@@ -24,13 +23,6 @@ func pending() -> Array:
 	for job: Dictionary in operations.values():
 		if not job.done: result.append({"operation_id": job.id, "phase": job.phase, "paths": job.journal.paths})
 	return result
-
-func state(operation_id: String = "") -> Dictionary:
-	if not operation_id.is_empty() and not operations.has(operation_id): return host.fail("OPERATION_NOT_FOUND", "No import operation exists with this ID in the current editor session.")
-	var result: Array = []
-	for job: Dictionary in operations.values():
-		if operation_id.is_empty() or job.id == operation_id: result.append(_result(job))
-	return {"operations": result, "editor_epoch": host.epoch}
 
 func _overlap(paths: Array) -> String:
 	for job: Dictionary in operations.values():
@@ -67,16 +59,10 @@ func start(p: Dictionary) -> Dictionary:
 		elif not FileAccess.file_exists(destination): return host.fail("FILE_NOT_FOUND", "Reimport destination does not exist.")
 		else: expected[destination] = FileAccess.get_file_as_bytes(destination)
 	if paths.is_empty(): return host.fail("EMPTY_IMPORT", "Provide at least one asset.")
-	while operations.size() >= 32:
-		var removed: bool = false
-		for id: String in operations.keys():
-			if operations[id].done:
-				operations.erase(id)
-				removed = true
-				break
-		if not removed: return host.fail("LIMIT_EXCEEDED", "Too many imports are still pending.")
-	sequence += 1
-	var id: String = "import-" + host.epoch + "-" + str(sequence)
+	if operations.size() >= 32: return host.fail("LIMIT_EXCEEDED", "Too many imports are still pending.")
+	var reservation: Dictionary = host.operation_records.begin("import_assets")
+	if reservation.has("error"): return reservation
+	var id: String = reservation.operation_id
 	var job: Dictionary = {"id": id, "phase": "writing", "specs": p.files.duplicate(true), "journal": FileJournal.new(paths), "expected": expected, "files_written": [], "options_changed": [], "failures": [], "done": false, "monitoring": false, "conflicted": false, "edit_id": null, "assets": []}
 	operations[id] = job
 	if files.write_files(staged):
@@ -93,7 +79,10 @@ func start(p: Dictionary) -> Dictionary:
 		EditorInterface.get_resource_filesystem().scan()
 	await _advance(job)
 	if not job.done: _schedule(job)
-	return _result(job)
+	var result: Dictionary = _result(job)
+	result.details_retained = host.operation_records.publish(id, result, not job.done)
+	if job.done: operations.erase(id)
+	return result
 
 func _sources_match(job: Dictionary) -> bool:
 	if FileJournal.matches(job.expected): return true
@@ -169,8 +158,10 @@ func _resume(id: String) -> void:
 		if stopped: break
 		host.busy = true
 		await _advance(job)
+		host.operation_records.publish(job.id, _result(job), not job.done)
 		host.busy = false
 	job.monitoring = false
+	if job.done: operations.erase(id)
 
 func _result(job: Dictionary) -> Dictionary:
 	var failures: Array = job.failures.duplicate(true)

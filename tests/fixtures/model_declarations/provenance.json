@@ -1,0 +1,20 @@
+{
+  "codex_cli": "0.154.0",
+  "capture_method": "Programmatic ALL_TOOLS metadata export through a catalog-only MCP server; no Godot execution.",
+  "tool_count": 45,
+  "captured_file": "v11-actual.json",
+  "capture_sha256": "205a4339968e0e21f84a59dce592497d3c04f691d6fc14e7e7d7be42341b4102",
+  "input_contract_sha256": "4f22266ff24af3e367fab3e8045d8ce54ac1fe2436d6c72e6890e763f5ccf3cd",
+  "checked_tools": [
+    "send_input",
+    "wait_for_condition",
+    "edit_tileset",
+    "edit_animation",
+    "create_nodes",
+    "get_resource",
+    "update_resource",
+    "apply_script_changes",
+    "edit_script",
+    "get_operation_result"
+  ]
+}

@@ -39,8 +39,8 @@ def prepare_timeout_probe(project):
 async def completed(bridge, operation_id):
     for _ in range(200):
         try:
-            result = await bridge.call('get_context', {'scope': 'operations', 'operation_id': operation_id})
-            operation = result['operations'][0]
+            result = await bridge.call('get_operation_result', {'operation_id': operation_id})
+            operation = result['result']
             if operation['phase'] in {'completed', 'failed'}:
                 return operation
         except ToolError as error:
@@ -97,8 +97,8 @@ async def test_import_timeout_retains_changes_finishes_and_undoes(editor, phase)
             await bridge.call('import_assets', {'files': [spec]})
         assert duplicate.value.code == 'OPERATION_PENDING'
         assert duplicate.value.details['operation_id'] == result['operation_id']
-        state = await client.call_tool('get_context', {'scope': 'operations', 'operation_id': result['operation_id']})
-        assert state.structured_content['operations'][0]['undo_state'] == 'pending'
+        state = await client.call_tool('get_operation_result', {'operation_id': result['operation_id']})
+        assert state.structured_content['result']['undo_state'] == 'pending'
         await bridge.call('_test_import_wait', {'phase': ''})
         finished = await completed(bridge, result['operation_id'])
         Draft202012Validator(SPECS['import_assets']['outputSchema']).validate(finished)
@@ -172,9 +172,10 @@ async def test_import_rejects_an_unsaved_store_draft(editor):
     bridge, tmp = editor
     draft = 'extends Node\n# unsaved MCP draft\n'
     created = await bridge.call('apply_script_changes', {'changes': [
-        {'uri': 'res://draft.gd', 'create': True, 'source': draft},
+        {'create': {'uri': 'res://draft.gd', 'source': draft}},
     ]})
-    assert not created['saved']
+    assert created['documents'][0]['state'] == 'draft'
+    assert created['pending_save'] == ['res://draft.gd']
     assert not (bridge.project / 'draft.gd').exists()
     source = tmp / 'replacement.gd'
     source.write_text('extends Node\n# imported replacement\n')

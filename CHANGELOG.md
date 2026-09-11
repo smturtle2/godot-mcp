@@ -1,3 +1,15 @@
+# v4.7.2_11
+
+- **Breaking input contract:** select named payloads for script changes, runtime events and conditions, node sources, animation tracks/keys, and TileSet operations. Resource reads use `{uri}` or `{node:{scene,path,property}}`; resource mutations select `{local:{scene,path,property}}` or `{shared:<resource selector>}`. Required fields stay inside their selected payloads, and the same JSON Schema enforces exactly one choice before editor calls.
+- **Breaking document response contract:** `create_script`, `edit_script`, `apply_script_changes`, and `save_documents` return compact receipts with an operation ID, outcome, per-URI effects and validation summary. Partial results retain failed phases, conflicts, executable recovery arguments, persistence boundaries and applicable Undo scope.
+- Add `get_operation_result(operation_id)` as the 45th tool. It reads the detailed operation-time snapshot without repeating a mutation and reports current Undo eligibility separately. Document diagnostics, ordered save attempts and snapshot metadata are retained here instead of repeated in ordinary mutation responses.
+- Share bounded result retention across document operations and imports: 64 records and 16 MiB of serialized results per editor session, evicting completed records before pending ones. Missing, expired and temporarily unavailable results return explicit errors. Import execution and file journals remain with their domain owner, capped at 32 pending imports.
+- Shorten common instructions from 1,106 to 358 characters. Verify actual model declarations from Codex CLI 0.154.0 alongside strict schemas, generated arguments and real Godot behavior; TypeScript payload requirements and JSON Schema choice cardinality are checked separately.
+- Preserve JSON integer-valued atlas IDs and use native TileData direction checks when setting or clearing terrain peering bits.
+- Document clean current contracts as a development principle: backward compatibility is not a project goal. Keep one public input contract, canonical result owner and explicit compact projection, without superseded adapters or detail switches.
+
+Validated with 130 unit tests, 33 real Godot integration cases, 766 actual model-declaration assertions, generated-call schema validation, and isolated installation, reinstall, repair and stdio checks on Linux x86_64.
+
 # v4.7.2_10
 
 - Publish complete object variants for structured tool inputs while preserving optional project selection and default TileSet node scope. Reject mixed resource selectors in both schemas and the editor before mutation.

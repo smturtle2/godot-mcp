@@ -56,6 +56,14 @@ func property_exists(object: Object, property: String) -> bool:
 		if str(prop.name) == property: return true
 	return false
 
+func select_case(value: Variant, names: Array[String], field: String) -> Dictionary:
+	if not value is Dictionary or value.size() != 1:
+		return fail("INVALID_" + field.to_upper(), field + " must select exactly one named kind.")
+	var kind: String = str(value.keys()[0])
+	if kind not in names or not value[kind] is Dictionary:
+		return fail("INVALID_" + field.to_upper(), field + " contains an unsupported or non-object kind.")
+	return {"kind": kind, "value": value[kind]}
+
 func dispatch(method: String, p: Dictionary) -> Dictionary:
 	match method:
 		"inspect_runtime":
@@ -120,7 +128,9 @@ func release_input() -> void:
 	held_mouse_buttons = 0
 
 func event_key(spec: Dictionary) -> String:
-	return str(spec.type) + ":" + str(spec.get("key", spec.get("button", spec.get("action", spec.get("index", 0)))))
+	var kind: String = str(spec.get("kind", ""))
+	var payload: Dictionary = spec.get("payload", {})
+	return kind + ":" + str(payload.get("key", payload.get("button", payload.get("action", payload.get("index", 0)))))
 
 func mouse_button_bit(button: int) -> int:
 	if button < MOUSE_BUTTON_LEFT or button > MOUSE_BUTTON_MIDDLE: return 0
@@ -133,72 +143,81 @@ func capture_delta(delta: Vector2, info: Dictionary) -> Vector2:
 	return delta * Vector2(info.rect.size) / Vector2(info.size) * Vector2(info.viewport) / Vector2(info.original)
 
 func make_event(spec: Dictionary, capture_uri: String) -> Dictionary:
-	var position := Codec.v2(spec.get("position", {}))
-	if not capture_uri.is_empty() and spec.has("position"):
+	var selected: Dictionary = select_case(spec.get("event", {}), ["key", "mouse_button", "mouse_motion", "touch", "drag", "action"], "event")
+	if selected.has("error"): return selected
+	var kind: String = selected.kind
+	var data: Dictionary = selected.value
+	var position := Codec.v2(data.get("position", {}))
+	if not capture_uri.is_empty() and data.has("position"):
 		if not captures.has(capture_uri): return fail("STALE_CAPTURE", "Capture metadata expired or belongs to another run.")
 		var info: Dictionary = captures[capture_uri]
 		position = capture_position(position, info)
 	var event: InputEvent
-	match str(spec.get("type", "")):
+	match kind:
 		"key":
-			var code: int = OS.find_keycode_from_string(str(spec.get("key", "")))
+			var code: int = OS.find_keycode_from_string(str(data.get("key", "")))
 			if code == KEY_NONE: return fail("INVALID_KEY", "Unknown key name.")
 			var key := InputEventKey.new()
 			key.keycode = code
-			if spec.get("physical", false): key.physical_keycode = code
-			key.pressed = spec.get("pressed", false)
+			if data.get("physical", false): key.physical_keycode = code
+			key.pressed = data.get("pressed", false)
 			event = key
 		"mouse_button":
 			var buttons := {"left": MOUSE_BUTTON_LEFT, "right": MOUSE_BUTTON_RIGHT, "middle": MOUSE_BUTTON_MIDDLE, "wheel_up": MOUSE_BUTTON_WHEEL_UP, "wheel_down": MOUSE_BUTTON_WHEEL_DOWN}
-			if not buttons.has(spec.get("button", "")): return fail("INVALID_BUTTON", "Unknown mouse button.")
+			if not buttons.has(data.get("button", "")): return fail("INVALID_BUTTON", "Unknown mouse button.")
 			var mouse := InputEventMouseButton.new()
-			mouse.button_index = buttons[spec.button]
+			mouse.button_index = buttons[data.button]
 			mouse.position = position
 			mouse.global_position = position
-			mouse.pressed = spec.get("pressed", false)
+			mouse.pressed = data.get("pressed", false)
 			event = mouse
 		"mouse_motion":
 			var mouse := InputEventMouseMotion.new()
 			mouse.position = position
 			mouse.global_position = position
-			mouse.relative = Codec.v2(spec.get("relative", {}))
+			mouse.relative = Codec.v2(data.get("relative", {}))
 			if not capture_uri.is_empty(): mouse.relative = capture_delta(mouse.relative, captures[capture_uri])
 			event = mouse
 		"touch":
 			var touch := InputEventScreenTouch.new()
-			touch.index = int(spec.get("index", 0))
+			touch.index = int(data.get("index", 0))
 			touch.position = position
-			touch.pressed = spec.get("pressed", false)
+			touch.pressed = data.get("pressed", false)
 			event = touch
 		"drag":
 			var touch := InputEventScreenDrag.new()
-			touch.index = int(spec.get("index", 0))
+			touch.index = int(data.get("index", 0))
 			touch.position = position
-			touch.relative = Codec.v2(spec.get("relative", {}))
+			touch.relative = Codec.v2(data.get("relative", {}))
 			if not capture_uri.is_empty(): touch.relative = capture_delta(touch.relative, captures[capture_uri])
 			event = touch
 		"action":
-			if not InputMap.has_action(spec.get("action", "")): return fail("ACTION_NOT_FOUND", "The input action is not defined.")
+			if not InputMap.has_action(data.get("action", "")): return fail("ACTION_NOT_FOUND", "The input action is not defined.")
 			var action := InputEventAction.new()
-			action.action = str(spec.action)
-			action.pressed = spec.get("pressed", false)
-			action.strength = float(spec.get("strength", 1))
+			action.action = str(data.action)
+			action.pressed = data.get("pressed", false)
+			action.strength = float(data.get("strength", 1))
 			event = action
 		_: return fail("INVALID_EVENT", "Unsupported input event type.")
 	if event is InputEventWithModifiers:
-		event.shift_pressed = spec.get("shift", false)
-		event.ctrl_pressed = spec.get("ctrl", false)
-		event.alt_pressed = spec.get("alt", false)
-		event.meta_pressed = spec.get("meta", false)
-	return {"event": event}
+		event.shift_pressed = data.get("shift", false)
+		event.ctrl_pressed = data.get("ctrl", false)
+		event.alt_pressed = data.get("alt", false)
+		event.meta_pressed = data.get("meta", false)
+	return {"event": event, "kind": kind, "payload": data}
 
 func signal_seen(watch: Dictionary) -> void:
 	watch.seen = true
 
 func watch_condition(condition: Dictionary) -> Dictionary:
-	if condition.get("type", "") != "signal": return {}
-	var node := node_at(condition.get("node", {}))
-	var name: String = condition.get("signal", "")
+	if condition.is_empty(): return {}
+	var selected: Dictionary = select_case(condition, ["scene", "node", "property", "signal"], "condition")
+	if selected.has("error"): return selected
+	var kind: String = selected.kind
+	if kind != "signal": return {}
+	var data: Dictionary = selected.value
+	var node := node_at(data.get("node", {}))
+	var name: String = data.get("signal", "")
 	if not node or not node.has_signal(name): return fail("SIGNAL_NOT_FOUND", "Signal condition target does not exist.")
 	var count: int = 0
 	for signal_info: Dictionary in node.get_signal_list():
@@ -214,19 +233,23 @@ func unwatch(watch: Dictionary) -> void:
 		watch.node.disconnect(watch.signal, watch.callback)
 
 func observation(condition: Dictionary, watch: Dictionary) -> Dictionary:
-	var kind: String = condition.get("type", "")
+	var selected: Dictionary = select_case(condition, ["scene", "node", "property", "signal"], "condition")
+	if selected.has("error"): return selected
+	var kind: String = selected.kind
+	var data: Dictionary = selected.value
 	if kind == "scene":
 		var current: String = get_tree().current_scene.scene_file_path if get_tree().current_scene else ""
-		return {"satisfied": current == condition.get("uri", ""), "value": current}
+		return {"satisfied": current == data.get("uri", ""), "value": current}
 	if kind == "signal": return {"satisfied": watch.get("seen", false), "value": watch.get("seen", false)}
-	var node := node_at(condition.get("node", {}))
-	if kind == "node": return {"satisfied": (node != null) == bool(condition.get("exists", true)), "value": node != null}
+	var node := node_at(data.get("node", {}))
+	if kind == "node": return {"satisfied": (node != null) == bool(data.get("exists", true)), "value": node != null}
 	if not node: return {"satisfied": false, "value": null, "reason": "node_missing"}
-	var property: String = condition.get("property", "")
+	if kind != "property": return fail("INVALID_CONDITION", "Unsupported condition kind.")
+	var property: String = data.get("property", "")
 	if not property_exists(node, property): return fail("PROPERTY_NOT_FOUND", "Condition property does not exist.")
 	var actual: Variant = node.get(property)
-	var expected: Variant = Codec.decode(condition.get("value"))
-	var operator: String = condition.get("operator", "eq")
+	var expected: Variant = Codec.decode(data.get("value"))
+	var operator: String = data.get("operator", "eq")
 	var yes: bool = false
 	if operator in ["gt", "gte", "lt", "lte"] and not ((actual is float or actual is int) and (expected is float or expected is int)):
 		return fail("INVALID_COMPARISON", "Ordering comparisons require numbers.")
@@ -261,7 +284,7 @@ func send_input(p: Dictionary) -> Dictionary:
 		previous = time
 		var made: Dictionary = make_event(spec, str(p.get("capture_uri", "")))
 		if made.has("error"): return made
-		events.append({"at_ms": time, "event": made.event, "spec": spec})
+		events.append({"at_ms": time, "event": made.event, "kind": made.kind, "payload": made.payload})
 	var watch: Dictionary = watch_condition(p.get("wait_for", {}))
 	if watch.has("error"): return watch
 	var start: int = Time.get_ticks_msec()
@@ -276,11 +299,11 @@ func send_input(p: Dictionary) -> Dictionary:
 		elif item.event is InputEventMouseMotion:
 			item.event.button_mask = held_mouse_buttons
 		Input.parse_input_event(item.event)
-		if item.spec.has("pressed"):
-			var key: String = event_key(item.spec)
+		if item.payload.has("pressed"):
+			var key: String = event_key(item)
 			if item.event is InputEventMouseButton and mouse_button_bit(item.event.button_index) == 0:
 				pass
-			elif item.spec.pressed: held[key] = item.event.duplicate()
+			elif item.payload.pressed: held[key] = item.event.duplicate()
 			else: held.erase(key)
 		await get_tree().process_frame
 	var result: Dictionary = {"processed": events.size(), "elapsed_ms": Time.get_ticks_msec() - start}

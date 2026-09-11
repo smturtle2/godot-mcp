@@ -30,12 +30,25 @@ def test_serve_runs_async_server_for_valid_project(tmp_path, monkeypatch):
     (tmp_path / "project.godot").write_text("[application]\nconfig/name=Test\n")
     called = {}
 
-    async def fake_serve(project):
+    async def fake_serve(project, **kwargs):
         called["project"] = project
+        called["kwargs"] = kwargs
 
     monkeypatch.setattr(cli, "serve", fake_serve)
     assert cli.main(["serve", "--project", str(tmp_path)]) == 0
     assert called["project"] == tmp_path.resolve()
+    assert called["kwargs"] == {}
+
+
+def test_connect_forwards_home(monkeypatch):
+    calls = []
+
+    async def fake_serve(project, **kwargs):
+        calls.append((project, kwargs))
+
+    monkeypatch.setattr(cli, "serve", fake_serve)
+    assert cli.main(["connect"]) == 0
+    assert calls == [(None, {"home": cli.parser().parse_args(["connect"]).home})]
 
 
 def test_check_reports_catalog_and_connection(tmp_path, monkeypatch, capsys):

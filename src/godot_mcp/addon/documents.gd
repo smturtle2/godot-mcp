@@ -2,6 +2,7 @@
 extends RefCounted
 ## Source editing and explicit persistence, including Godot's linked-resource saves.
 var host: EditorPlugin
+const DocumentResult = preload("res://addons/godot_mcp/document_result.gd")
 const SourceStore = preload("res://addons/godot_mcp/source_store.gd")
 const SourceValidation = preload("res://addons/godot_mcp/source_validation.gd")
 const LogBuffer = preload("res://addons/godot_mcp/log_buffer.gd")
@@ -157,28 +158,38 @@ func create_script(p: Dictionary) -> Dictionary:
 	if material and diagnostics.get("valid") == true:
 		var material_plan: Dictionary = host.plan_property_changes(material, {"shader": {"$type": "Resource", "uri": uri}})
 		if material_plan.has("error"):
-			attachment_errors.append({"resource": host.register_resource(material), "code": "INCOMPATIBLE_SHADER", "message": str(material_plan.error.get("message", "Shader cannot be attached to this material.")), "retry": {"tool": "update_resource", "arguments": {"target": {"uri": host.register_resource(material)}, "scope": "shared", "set": {"shader": {"$type": "Resource", "uri": uri}}}}})
+			attachment_errors.append({"resource": host.register_resource(material), "code": "INCOMPATIBLE_SHADER", "message": str(material_plan.error.get("message", "Shader cannot be attached to this material.")), "retry": {"tool": "update_resource", "arguments": {"target": {"shared": {"uri": host.register_resource(material)}}, "set": {"shader": {"$type": "Resource", "uri": uri}}}}})
 		else:
 			changes.append_array(material_plan.get("changes", []))
 	elif material:
-		attachment_errors.append({"resource": host.register_resource(material), "code": "COMPILE_FAILED", "message": "Shader was saved; attachment skipped because validation did not pass.", "retry": {"tool": "update_resource", "arguments": {"target": {"uri": host.register_resource(material)}, "scope": "shared", "set": {"shader": {"$type": "Resource", "uri": uri}}}}})
-	var result: Dictionary = {"uri": uri, "revision": source.sha256_text(), "saved": true, "diagnostics": diagnostics, "attached": [], "attachment_errors": attachment_errors}
+		attachment_errors.append({"resource": host.register_resource(material), "code": "COMPILE_FAILED", "message": "Shader was saved; attachment skipped because validation did not pass.", "retry": {"tool": "update_resource", "arguments": {"target": {"shared": {"uri": host.register_resource(material)}}, "set": {"shader": {"$type": "Resource", "uri": uri}}}}})
+	var result: Dictionary = DocumentResult.begin({"edit_id": null, "scope": [], "retained_files": [uri]})
+	result.attachments = []
+	for item: Dictionary in attachment_errors:
+		var target: Dictionary = {"node": item.node} if item.has("node") else {"resource": item.resource}
+		var recovery: Dictionary = item.retry.duplicate(true)
+		recovery.prerequisite = "Repair the saved source and verify its compatibility before retrying attachment."
+		DocumentResult.failure(result, "attachment", item.code, item.message, target, recovery)
 	if not changes.is_empty():
 		var edit: Dictionary = host.commit_changes(changes, root if root else material, "Attach source")
-		result.edit_id = edit.get("edit_id")
-		result.attachments_saved = false
+		result.undo.edit_id = edit.get("edit_id")
+		result.undo.scope = ["attachments"]
 		for change: Dictionary in changes:
-			result.attached.append(host.node_ref(change.object) if change.object is Node else {"resource": host.register_resource(change.object), "property": change.property})
-	result.live_reload = "succeeded" if live_valid else "failed"
-	result.status = "completed" if diagnostics.get("valid") == true and live_valid and attachment_errors.is_empty() else "partial"
-	result.summary = "Source file saved; validation and requested attachments completed." if result.status == "completed" else "Source file remains saved; validation, live reload, or requested attachment did not complete. Edit the existing file instead of recreating it."
-	result.document = document_state(uri)
-	result.undo = {"edit_id": result.get("edit_id"), "scope": ["attachments"] if result.has("edit_id") else [], "retained_files": [uri]}
-	result.pending_save = [root.scene_file_path] if root and result.has("edit_id") else []
-	if material and result.has("edit_id"): result.pending_save.append(host.register_resource(material))
+			result.attachments.append(host.node_ref(change.object) if change.object is Node else {"resource": host.register_resource(change.object), "property": change.property})
+		if root: result.pending_save.append(root.scene_file_path)
+		if material: result.pending_save.append(host.register_resource(material))
 	EditorInterface.get_resource_filesystem().update_file(uri)
 	await host.get_tree().process_frame
-	return result
+	var record: Dictionary = DocumentResult.document(document_state(uri), "created")
+	if record.get("revision") != source.sha256_text(): record.applied_revision = source.sha256_text()
+	record.save = {"state": "saved"}
+	record.live_reload = "succeeded" if live_valid else ("failed" if diagnostics.get("valid") == true else "not_attempted")
+	DocumentResult.validation(record, diagnostics)
+	DocumentResult.put(result, record)
+	DocumentResult.validation_failures(result)
+	if record.live_reload == "failed":
+		DocumentResult.failure(result, "live_reload", "LIVE_RELOAD_FAILED", "Saved source could not reload in the editor.", {"uri": uri}, {"tool": "get_diagnostics", "arguments": {"uris": [uri]}})
+	return DocumentResult.finish(result, true)
 
 func edited_source(info: Dictionary, p: Dictionary) -> Dictionary:
 	if p.has("source"): return {"source": p.source}
@@ -197,26 +208,25 @@ func edited_source(info: Dictionary, p: Dictionary) -> Dictionary:
 	return {"source": source}
 
 func edit_script(p: Dictionary) -> Dictionary:
-	var changed: Dictionary = p.duplicate(true)
-	var result: Dictionary = await apply_script_changes({"changes": [changed], "save": false})
-	if result.has("error"): return result
-	var document: Dictionary = result.documents[0]
-	result.uri = document.uri
-	result.revision = document.revision
-	result.saved = document.saved
-	result.diagnostics = result.validation.sources[0]
-	result.runtime_application = "source_updated; running_game_application_not_verified"
+	var selected: Dictionary = host.select_case(p.get("change"), ["replace", "edit"], "change")
+	if selected.has("error"): return selected
+	var result: Dictionary = await apply_script_changes({"changes": [p.change], "save": false})
+	if not result.has("error"):
+		result.runtime_application = "source_updated; running_game_application_not_verified"
 	return result
 
 func apply_script_changes(p: Dictionary) -> Dictionary:
 	var plans: Array[Dictionary] = []
 	var uris: Array = []
-	for change: Dictionary in p.get("changes", []):
+	for item: Dictionary in p.get("changes", []):
+		var selected: Dictionary = host.select_case(item, ["create", "replace", "edit"], "changes")
+		if selected.has("error"): return selected
+		var change: Dictionary = selected.value
 		var uri: String = change.get("uri", "")
 		if not uri.begins_with("res://") or uri.get_extension() not in ["gd", "gdshader"]: return host.fail("UNSUPPORTED_LANGUAGE", "Use .gd or .gdshader sources.")
 		if uri in uris: return host.fail("DUPLICATE_DOCUMENT", "Combine changes for each URI into one entry.", {"uri": uri})
 		var info: Dictionary = source_info(uri)
-		var create: bool = change.get("create", false)
+		var create: bool = selected.kind == "create"
 		if create:
 			if not info.has("error"): return host.fail("ALREADY_EXISTS", "Source or draft already exists; edit it using its revision.", {"uri": uri})
 			info = {"source": "", "revision": "", "unsaved": false}
@@ -247,49 +257,55 @@ func apply_script_changes(p: Dictionary) -> Dictionary:
 		undo.add_do_method(store, "set_source", plan.uri, plan.source, plan.resource)
 		undo.add_undo_method(store, "restore_source", plan.uri, plan.before)
 		guards.append({"check": store.source_matches.bind(plan.uri, str(plan.source).sha256_text())})
-	var result: Dictionary = host.finish_edit(context, "Edit source documents", guards)
+	var edit: Dictionary = host.finish_edit(context, "Edit source documents", guards)
 	await host.get_tree().process_frame
-	# Validation receives the final sources of every file, including unsaved dependencies.
-	result.validation = await validate_sources(uris)
-	if result.validation.has("error"):
-		result.validation = validator.unavailable(uris, {}, result.validation.error.message)
+	var checked: Dictionary = await validate_sources(uris)
+	if checked.has("error"):
+		checked = validator.unavailable(uris, {}, checked.error.message)
 	var source_changed: bool = false
 	for guard: Dictionary in guards:
 		if not guard.check.call(): source_changed = true
-	result.persistence = {"saved": [], "failed": [], "complete": true}
+	var persistence: Dictionary = DocumentResult.begin()
 	if p.get("save", false) and not source_changed:
-		result.persistence = await save_documents({"uris": uris})
+		persistence = await save_documents({"uris": uris})
 	elif p.get("save", false):
-		result.persistence = {"saved": [], "failed": [{"error": "Source changed during validation; nothing was saved."}], "complete": false}
-	result.documents = []
-	result.pending_save = []
-	var retained: Array = []
-	var valid: bool = result.persistence.complete and not source_changed
+		for uri: String in uris:
+			DocumentResult.failure(persistence, "save", "SOURCE_CHANGED", "Source changed during validation; nothing was saved.", {"uri": uri}, {"tool": "read_script", "arguments": {"uri": uri}})
+	var result: Dictionary = DocumentResult.begin({"edit_id": edit.edit_id, "scope": ["live_sources"], "retained_files": [], "note": "Undo restores live source edits and removes never-saved drafts; already-saved files remain on disk."})
+	result.failures = persistence.failures
+	if checked.has("snapshot_id"): result.validation_snapshot = checked.snapshot_id
+	if persistence.has("save_observation"): result.save_observation = persistence.save_observation
 	var has_drafts: bool = false
 	for overlay_uri: String in store.overlays():
 		if not FileAccess.file_exists(overlay_uri): has_drafts = true
-	for diagnostic: Dictionary in result.validation.sources:
-		if diagnostic.get("valid") != true: valid = false
 	for plan: Dictionary in plans:
-		var document: Dictionary = document_state(plan.uri)
-		result.documents.append(document)
-		if not document.get("saved", false): result.pending_save.append(plan.uri)
-		if plan.create and FileAccess.file_exists(plan.uri): retained.append(plan.uri)
-		# Update the same live resource only after the coherent validation result exists.
+		var record: Dictionary = DocumentResult.document(document_state(plan.uri), "created" if plan.create else "updated")
+		if record.get("revision") != str(plan.source).sha256_text(): record.applied_revision = str(plan.source).sha256_text()
+		for diagnostic: Dictionary in checked.sources:
+			if diagnostic.uri == plan.uri: DocumentResult.validation(record, diagnostic)
+		if not record.has("validation"):
+			DocumentResult.validation(record, validator.unavailable([plan.uri], {}, "No validation result was produced.").sources[0])
+		if p.get("save", false):
+			record.save = {"state": "skipped" if source_changed else "failed"}
+			for saved_record: Dictionary in persistence.documents:
+				if saved_record.uri == plan.uri and saved_record.has("save"): record.save = saved_record.save
+		if plan.create and FileAccess.file_exists(plan.uri): result.undo.retained_files.append(plan.uri)
 		if plan.resource is Script and has_drafts:
-			# A preload cannot resolve a never-saved file in the live editor.
-			# Keep the valid draft without triggering misleading compiler errors.
-			document.live_reload = "deferred"
+			record.live_reload = "deferred"
 		elif plan.resource is Script and not source_changed:
 			var reloaded: Error = plan.resource.reload(true)
-			document.live_reload = "succeeded" if reloaded == OK else "failed"
-			if reloaded != OK: valid = false
-		elif plan.resource is Shader: plan.resource.get_rid()
-	result.status = "completed" if valid else "partial"
-	result.summary = "Source changes applied and validated." if valid else "Source changes remain applied; inspect document, validation, and persistence results before continuing."
-	result.undo = {"edit_id": result.edit_id, "scope": ["live_sources"], "retained_files": retained, "note": "Undo restores live source edits and removes never-saved drafts; already-saved files remain on disk."}
-	result.saved = result.pending_save.is_empty()
-	return result
+			record.live_reload = "succeeded" if reloaded == OK else "failed"
+			if reloaded != OK:
+				DocumentResult.failure(result, "live_reload", "LIVE_RELOAD_FAILED", "Applied source could not reload in the editor.", {"uri": plan.uri}, {"tool": "get_diagnostics", "arguments": {"uris": [plan.uri]}})
+		elif plan.resource is Shader:
+			plan.resource.get_rid()
+		else:
+			record.live_reload = "deferred"
+		DocumentResult.put(result, record)
+	for saved_record: Dictionary in persistence.documents:
+		if saved_record.uri not in uris: DocumentResult.put(result, saved_record)
+	DocumentResult.validation_failures(result)
+	return DocumentResult.finish(result, true)
 
 func save_documents(p: Dictionary) -> Dictionary:
 	var saved: Array = []
@@ -300,13 +316,15 @@ func save_documents(p: Dictionary) -> Dictionary:
 		if not info.has("error"): before_sources[uri] = info.disk_revision
 	var original_root := EditorInterface.get_edited_scene_root()
 	var original_scene: String = original_root.scene_file_path if original_root else ""
+	var request_index: int = -1
 	for uri: String in p.get("uris", []):
+		request_index += 1
 		var target: String = str(p.get("save_as", {}).get(uri, uri))
 		if not target.begins_with("res://") or not host.paths_safe(target):
-			failed.append({"uri": uri, "error": "A res:// save_as path is required for an in-memory resource."})
+			failed.append({"uri": uri, "index": request_index, "code": "INVALID_PATH", "error": "A res:// save_as path is required for an in-memory resource."})
 			continue
 		if target != uri and FileAccess.file_exists(target):
-			failed.append({"uri": uri, "error": "save_as destination already exists."})
+			failed.append({"uri": uri, "index": request_index, "code": "ALREADY_EXISTS", "error": "save_as destination already exists."})
 			continue
 		var error: Error = OK
 		if uri == "res://project.godot":
@@ -315,7 +333,7 @@ func save_documents(p: Dictionary) -> Dictionary:
 		elif uri.ends_with(".tscn"):
 			var conflicts: Array = store.conflicts()
 			if not conflicts.is_empty():
-				failed.append({"uri": uri, "code": "EXTERNAL_CHANGE", "error": "Scene saving may also save conflicting source buffers.", "conflicts": conflicts})
+				failed.append({"uri": uri, "index": request_index, "code": "EXTERNAL_CHANGE", "error": "Scene saving may also save conflicting source buffers.", "conflicts": conflicts})
 				continue
 			var root: Node = host.scene_root(uri)
 			if not root:
@@ -330,7 +348,7 @@ func save_documents(p: Dictionary) -> Dictionary:
 		elif uri.get_extension() in ["gd", "gdshader"]:
 			var info: Dictionary = source_info(uri)
 			if info.has("error") or info.get("external_change", false):
-				failed.append({"uri": uri, "error": "Source is missing or disk changes conflict with unsaved edits."})
+				failed.append({"uri": uri, "index": request_index, "code": str(info.error.get("code", "FILE_NOT_FOUND")) if info.has("error") else "EXTERNAL_CHANGE", "error": "Source is missing or disk changes conflict with unsaved edits.", "conflicts": store.conflicts([uri])})
 				continue
 			var resource: Resource = host.resource_uri(uri)
 			if resource is Script: resource.source_code = info.source
@@ -360,10 +378,10 @@ func save_documents(p: Dictionary) -> Dictionary:
 					host.register_resource(resource)
 					EditorInterface.set_object_edited(resource, false)
 		if error == OK:
-			saved.append({"uri": uri, "saved_as": target})
+			saved.append({"uri": uri, "saved_as": target, "index": request_index})
 			EditorInterface.get_resource_filesystem().update_file(target)
 		else:
-			failed.append({"uri": uri, "error": error_string(error)})
+			failed.append({"uri": uri, "index": request_index, "code": "SAVE_FAILED", "error": error_string(error)})
 	if not original_scene.is_empty() and FileAccess.file_exists(original_scene): EditorInterface.open_scene_from_path(original_scene)
 	await host.get_tree().process_frame
 	var also_saved: Array = []
@@ -371,7 +389,38 @@ func save_documents(p: Dictionary) -> Dictionary:
 		var info: Dictionary = source_info(uri)
 		if not info.has("error") and not info.unsaved and info.disk_revision != before_sources[uri] and uri not in p.get("uris", []):
 			also_saved.append(uri)
-	return {"saved": saved, "failed": failed, "also_saved": also_saved, "also_saved_scope": "observed source buffers; Godot scene saves may persist other linked resources", "complete": failed.is_empty(), "status": "completed" if failed.is_empty() else ("partial" if not saved.is_empty() else "failed"), "summary": "Requested documents saved." if failed.is_empty() else "Some documents were not saved; successful saves remain on disk.", "undo": {"scope": [], "note": "Saving is not an editor undo operation. Undoing an edit does not restore disk files."}}
+	var result: Dictionary = DocumentResult.begin({"edit_id": null, "scope": [], "note": "Saving is not an editor undo operation. Undoing an edit does not restore disk files."})
+	result.save_observation = "observed source buffers; Godot scene saves may persist other linked resources"
+	for item: Dictionary in saved:
+		var record: Dictionary = persistence_document(item.saved_as, "saved")
+		record.save = {"state": "saved", "index": item.index}
+		if item.uri != item.saved_as: record.save.previous_uri = item.uri
+		DocumentResult.put(result, record)
+	for item: Dictionary in failed:
+		var record: Dictionary = persistence_document(item.uri)
+		var target: String = str(p.get("save_as", {}).get(item.uri, item.uri))
+		record.save = {"state": "failed", "index": item.index}
+		if target != item.uri: record.save.target = target
+		DocumentResult.put(result, record)
+		var retry_args: Dictionary = {"uris": [item.uri]}
+		if target != item.uri: retry_args.save_as = {item.uri: target}
+		var recovery: Dictionary = {"tool": "save_documents", "arguments": retry_args, "prerequisite": "Resolve the reported conflict or destination problem before retrying this save."}
+		if item.get("code") == "EXTERNAL_CHANGE":
+			recovery = {"tool": "get_context", "arguments": {"scope": "editor"}, "prerequisite": "Resolve source/disk conflicts before saving; preserve the applied source edits."}
+		var details: Dictionary = {"index": item.index}
+		if item.has("conflicts") and not item.conflicts.is_empty(): details.conflicts = item.conflicts
+		DocumentResult.failure(result, "save", item.get("code", "SAVE_FAILED"), item.error, {"uri": item.uri}, recovery, details)
+	for uri: String in also_saved:
+		var record: Dictionary = persistence_document(uri, "saved")
+		record.save = {"state": "saved", "requested": false}
+		DocumentResult.put(result, record)
+	return DocumentResult.finish(result, not saved.is_empty() or not also_saved.is_empty())
+
+func persistence_document(uri: String, effect: String = "") -> Dictionary:
+	# Non-source saves report their persistence outcome without claiming a source
+	# revision or a live-buffer state that the source store does not observe.
+	var state: Dictionary = document_state(uri) if uri.get_extension() in ["gd", "gdshader"] else {"uri": uri}
+	return DocumentResult.document(state, effect)
 
 func find_assets(p: Dictionary) -> Dictionary:
 	var scope: String = p.get("scope", "res://")
