@@ -123,6 +123,21 @@ async def test_editor_authoring(editor):
     assert 'SCRIPT ERROR' not in log, log
 
 
+async def test_resource_target_validation_and_json_refs(editor):
+    b, _tmp = editor
+    await call(b, 'create_nodes', parent=ref(), nodes=[{'name': 'Sprite', 'class': 'Sprite2D'}])
+    await call(b, 'create_resource', **{'class': 'GradientTexture2D', 'assign_to': {'node': ref('Sprite'), 'property': 'texture'}})
+    current = await call(b, 'get_resource', target={'node': ref('Sprite'), 'property': 'texture'}, properties=['width'])
+    with pytest.raises(ToolError):
+        await call(b, 'get_resource', target={'uri': current['uri'], 'node': ref('Sprite'), 'property': 'texture'})
+    with pytest.raises(ToolError):
+        await call(b, 'update_resource', target={'uri': current['uri']}, set={'width': 32}, scope='node')
+    unchanged = await call(b, 'get_resource', target={'node': ref('Sprite'), 'property': 'texture'}, properties=['width'])
+    assert unchanged['properties']['width'] == current['properties']['width']
+    updated = await call(b, 'update_resource', target={'node': ref('Sprite'), 'property': 'texture'}, set={'width': 32}, scope='node')
+    assert updated['affected'][0] == {'node': ref('Sprite'), 'property': 'texture'}
+
+
 async def test_runtime_and_debugger(editor, monkeypatch):
     b, tmp = editor
     monkeypatch.delenv('GODOT_MCP_DAP_PORT', raising=False)

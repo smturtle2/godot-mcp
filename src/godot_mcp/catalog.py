@@ -22,10 +22,13 @@ def integer(low: int = 0, high: int = 2147483647) -> dict:
 S = {"type": "string", "minLength": 1, "maxLength": 4096}
 TEXT = {"type": "string", "maxLength": 1_000_000}
 B = {"type": "boolean"}
+SAFE_COUNTER = {"type": "integer", "minimum": 0, "maximum": 9_007_199_254_740_991}
+PROJECT = {"type": "string", "minLength": 1,
+           "description": "Absolute project path; omit after selecting via get_context."}
 
 NULLABLE_STRING = {"type": ["string", "null"]}
-DIAGNOSTIC_ENTRY = {"type": "object", "properties": {"kind": enum("error", "warning", "log"), "uri": {"type": "string"}, "line": integer(), "message": TEXT, "cursor": integer(), "time_usec": integer(), "count": integer(1)}, "additionalProperties": True}
-DOCUMENT_STATE = {"type": "object", "properties": {"uri": {"type": "string"}, "state": enum("saved", "modified", "draft", "unavailable"), "revision": NULLABLE_STRING, "disk_revision": NULLABLE_STRING, "saved": B, "live_reload": enum("succeeded", "failed", "deferred")}, "required": ["uri", "state"], "additionalProperties": True}
+DIAGNOSTIC_ENTRY = {"type": "object", "properties": {"kind": enum("error", "warning", "log"), "uri": {"type": "string"}, "line": integer(), "message": TEXT, "cursor": SAFE_COUNTER, "time_usec": SAFE_COUNTER, "count": integer(1)}, "additionalProperties": True}
+DOCUMENT_STATE = {"type": "object", "properties": {"uri": {"type": "string"}, "state": enum("saved", "modified", "draft", "unavailable"), "revision": NULLABLE_STRING, "disk_revision": NULLABLE_STRING, "base_disk_revision": NULLABLE_STRING, "baseline_known": B, "conflict": enum("none", "external_change", "baseline_unknown"), "saved": B, "live_reload": enum("succeeded", "failed", "deferred")}, "required": ["uri", "state"], "additionalProperties": True}
 VALIDATION_SOURCE = {"type": "object", "properties": {"uri": {"type": "string"}, "revision": NULLABLE_STRING, "state": enum("valid", "invalid", "pending", "unavailable"), "valid": {"type": ["boolean", "null"]}, "scope": {"const": "snapshot"}, "entries": arr(DIAGNOSTIC_ENTRY, 2000)}, "required": ["uri", "revision", "state", "valid", "scope", "entries"], "additionalProperties": True}
 VALIDATION_RESULT = {"type": "object", "properties": {"sources": arr(VALIDATION_SOURCE, 100), "snapshot_id": S, "source_revisions": {"type": "object", "additionalProperties": {"type": "string"}}}, "required": ["sources"], "additionalProperties": True}
 UNDO_RESULT = {"type": "object", "properties": {"edit_id": NULLABLE_STRING, "scope": arr(S, 16), "retained_files": arr({"type": "string"}, 200), "note": TEXT}, "additionalProperties": True}
@@ -44,8 +47,11 @@ NODE_PATH = {"type": "string", "minLength": 1, "maxLength": 2048,
              "pattern": r"^(?!/)(?!.*(?:^|/)\.\.(?:/|$))(?!.*:).+"}
 REF = obj({"scene": RES, "path": NODE_PATH}, ("scene", "path"))
 RUN_REF = obj({"run_id": S, "path": {"type": "string", "pattern": "^/root(?:/|$)", "maxLength": 2048}}, ("run_id", "path"))
-RESOURCE = obj({"uri": {"type": "string", "pattern": r"^(?:res://|godot://resources/).+"},
-                "node": REF, "property": S}, oneOf=[{"required": ["uri"]}, {"required": ["node", "property"]}])
+RESOURCE_URI_PROPERTIES = {"uri": {"type": "string", "pattern": r"^(?:res://|godot://resources/).+"}}
+RESOURCE_NODE_PROPERTIES = {"node": REF, "property": S}
+URI_RESOURCE = obj(RESOURCE_URI_PROPERTIES, ("uri",))
+NODE_RESOURCE = obj(RESOURCE_NODE_PROPERTIES, ("node", "property"))
+RESOURCE = obj({**RESOURCE_URI_PROPERTIES, **RESOURCE_NODE_PROPERTIES}, oneOf=[URI_RESOURCE, NODE_RESOURCE])
 V2 = obj({"x": N, "y": N}, ("x", "y"))
 I2 = obj({"x": integer(-1_000_000, 1_000_000), "y": integer(-1_000_000, 1_000_000)}, ("x", "y"))
 SIZE = obj({"x": integer(1, 4096), "y": integer(1, 4096)}, ("x", "y"))
@@ -57,12 +63,15 @@ REGION = obj({"origin": I2, "size": SIZE}, ("origin", "size"))
 TILE = obj({"source_id": integer(-1), "atlas": I2, "alternative": integer()}, ("source_id",))
 CELL = obj({"cell": I2, "tile": TILE}, ("cell", "tile"))
 SIGNAL = obj({"from": REF, "signal": S, "to": REF, "method": S, "binds": arr(VALUE, 16)}, ("from", "signal", "to", "method"))
-CONDITION = obj({"type": enum("scene", "node", "property", "signal"), "uri": RES,
-                 "node": RUN_REF, "property": S, "operator": enum("eq", "ne", "gt", "gte", "lt", "lte"),
-                 "value": VALUE, "exists": B, "signal": S}, ("type",),
-                allOf=[{"if": {"properties": {"type": {"const": k}}}, "then": {"required": req}}
-                       for k, req in [("scene", ["uri"]), ("node", ["node"]),
-                                      ("property", ["node", "property", "value"]), ("signal", ["node", "signal"])]])
+CONDITION_PROPERTIES = {"type": enum("scene", "node", "property", "signal"), "uri": RES,
+                        "node": RUN_REF, "property": S, "operator": enum("eq", "ne", "gt", "gte", "lt", "lte"),
+                        "value": VALUE, "exists": B, "signal": S}
+CONDITION = obj(CONDITION_PROPERTIES, ("type",), oneOf=[
+    obj({**CONDITION_PROPERTIES, "type": {"const": "scene"}}, ("type", "uri")),
+    obj({**CONDITION_PROPERTIES, "type": {"const": "node"}}, ("type", "node")),
+    obj({**CONDITION_PROPERTIES, "type": {"const": "property"}}, ("type", "node", "property", "value")),
+    obj({**CONDITION_PROPERTIES, "type": {"const": "signal"}}, ("type", "node", "signal")),
+])
 INPUT_COMMON = {"at_ms": {**integer(0, 60_000), "description": "Milliseconds from batch start; events must be nondecreasing."}}
 MODIFIERS = {"shift": B, "ctrl": B, "alt": B, "meta": B}
 INPUT = {"oneOf": [
@@ -93,19 +102,27 @@ INPUT["properties"]["type"] = enum("key", "mouse_button", "mouse_motion", "touch
 MAPPING_EVENT = obj({"type": enum("key", "mouse_button", "joypad_button", "joypad_motion"), "key": S,
                      "physical": B, "button": integer(0, 32), "axis": integer(0, 15), "axis_value": N,
                      "shift": B, "ctrl": B, "alt": B, "meta": B}, ("type",))
-NODE_SPEC = obj({"key": {**S, "description": "Optional unique logical identifier for this record."},
-                 "parent_key": {**S, "description": "Optional logical parent key; omitted means the tool parent."},
-                 "name": {**S, "description": "Node name."}, "class": {**S, "description": "Node class to instantiate."},
-                 "instance": {**RES, "description": "PackedScene URI to instantiate."},
-                 "duplicate": {**REF, "description": "Live node reference to duplicate."}, "properties": PROPS}, ("name",),
-                oneOf=[{"required": ["class"]}, {"required": ["instance"]}, {"required": ["duplicate"]}])
-SOURCE_RESULT = {"uri": RES, "source": TEXT, "revision": S, "disk_revision": NULLABLE_STRING, "exists_on_disk": B, "unsaved": B, "buffer": S, "external_change": B, "symbols": arr({"type": "object", "additionalProperties": True}, 10000), "range": RANGE}
+NODE_PROPERTIES = {"key": {**S, "description": "Optional unique logical identifier for this record."},
+                   "parent_key": {**S, "description": "Optional logical parent key; omitted means the tool parent."},
+                   "name": {**S, "description": "Node name."}, "class": {**S, "description": "Node class to instantiate."},
+                   "instance": {**RES, "description": "PackedScene URI to instantiate."},
+                   "duplicate": {**REF, "description": "Live node reference to duplicate."}, "properties": PROPS}
+NODE_SPEC = obj(NODE_PROPERTIES, ("name",), oneOf=[
+    obj(NODE_PROPERTIES, ("name", "class")),
+    obj(NODE_PROPERTIES, ("name", "instance")),
+    obj(NODE_PROPERTIES, ("name", "duplicate")),
+])
+SOURCE_RESULT = {"uri": RES, "source": TEXT, "revision": S, "disk_revision": NULLABLE_STRING, "base_disk_revision": NULLABLE_STRING, "baseline_known": B, "conflict": enum("none", "external_change", "baseline_unknown"), "exists_on_disk": B, "unsaved": B, "buffer": S, "external_change": B, "symbols": arr({"type": "object", "additionalProperties": True}, 10000), "range": RANGE}
 CREATE_SCRIPT_OUTPUT = output_schema({"uri": RES, "revision": S, "saved": B, "diagnostics": VALIDATION_SOURCE, "attached": arr({"type": "object", "additionalProperties": True}, 50), "attachment_errors": arr({"type": "object", "additionalProperties": True}, 50), "status": enum("completed", "partial", "failed"), "summary": TEXT, "document": DOCUMENT_STATE, "undo": UNDO_RESULT, "pending_save": arr(S, 200)}, ("uri", "revision", "saved", "diagnostics", "attached", "attachment_errors", "status", "summary", "document", "undo", "pending_save"))
 EDIT_SCRIPT_OUTPUT = output_schema({"uri": RES, "revision": S, "saved": B, "diagnostics": VALIDATION_SOURCE, "runtime_application": S, "documents": arr(DOCUMENT_STATE, 100), "validation": VALIDATION_RESULT, "persistence": {"type": "object", "additionalProperties": True}, "pending_save": arr(S, 200), "status": enum("completed", "partial", "failed"), "summary": TEXT, "undo": UNDO_RESULT, "edit_id": NULLABLE_STRING}, ("uri", "revision", "saved", "diagnostics"))
 APPLY_SCRIPT_OUTPUT = output_schema({"documents": arr(DOCUMENT_STATE, 100), "validation": VALIDATION_RESULT, "persistence": {"type": "object", "additionalProperties": True}, "pending_save": arr(S, 200), "status": enum("completed", "partial", "failed"), "summary": TEXT, "undo": UNDO_RESULT, "saved": B, "edit_id": NULLABLE_STRING}, ("documents", "validation", "persistence", "pending_save", "status", "summary", "undo", "saved"))
 SAVE_DOCUMENTS_OUTPUT = output_schema({"saved": arr({"type": "object", "additionalProperties": True}, 200), "failed": arr({"type": "object", "additionalProperties": True}, 200), "also_saved": arr(RES, 200), "also_saved_scope": TEXT, "complete": B, "status": enum("completed", "partial", "failed"), "summary": TEXT, "undo": UNDO_RESULT}, ("saved", "failed", "complete", "status", "summary", "undo"))
 READ_SCRIPT_OUTPUT = output_schema(SOURCE_RESULT, ("uri", "source", "revision", "symbols"))
 DIAGNOSTICS_OUTPUT = output_schema({"entries": arr(DIAGNOSTIC_ENTRY, 1000), "sources": arr(VALIDATION_SOURCE, 200), "entries_are_history": B, "origin": S, "snapshot_id": S, "runtime": {"type": "object", "additionalProperties": True}}, ("entries", "sources", "entries_are_history", "origin"))
+OP_FAILURE = obj({"phase": S, "code": S, "message": TEXT, "details": {"type": "object", "additionalProperties": True}}, ("phase", "code", "message", "details"))
+OPERATION_RESULT = {"status": enum("completed", "partial", "failed"), "complete": B, "failures": arr(OP_FAILURE, 200), "pending": arr(S, 200)}
+SEND_INPUT_OUTPUT = output_schema({**OPERATION_RESULT, "processed": integer(), "elapsed_ms": SAFE_COUNTER, "held_inputs": SAFE_COUNTER, "condition": {"type": "object", "additionalProperties": True}, "capture": {"type": "object", "additionalProperties": True}, "recovery": TEXT, "run_id": S, "observed_at_usec": SAFE_COUNTER, "frame": SAFE_COUNTER}, ("status", "complete", "failures", "pending", "processed", "elapsed_ms", "held_inputs"))
+IMPORT_ASSETS_OUTPUT = output_schema({**OPERATION_RESULT, "operation_id": S, "phase": enum("writing", "importing", "reimporting", "settling", "completed", "failed"), "saved": B, "files_written": arr(S, 500), "options_changed": arr(S, 500), "changed_paths": arr(S, 1500), "assets": arr(obj({"uri": RES, "imported": B, "resource": {"anyOf": [obj({"$type": {"const": "Resource"}, "uri": S, "class": S}, ("$type", "uri", "class")), {"type": "null"}]}, "preservation": TEXT}, ("uri", "imported", "resource", "preservation")), 500), "edit_id": NULLABLE_STRING, "undo_state": enum("pending", "available", "unavailable", "not_needed"), "undo": UNDO_RESULT}, ("status", "complete", "failures", "pending", "operation_id", "phase", "saved", "files_written", "options_changed", "changed_paths", "assets", "edit_id", "undo_state", "undo"))
 SCRIPT_CHANGE = {"oneOf": [
         obj({"uri": RES, "create": {"const": True}, "source": TEXT}, ("uri", "create", "source")),
         obj({"uri": RES, "create": B, "if_revision": S, "source": TEXT}, ("uri", "if_revision", "source"),
@@ -116,12 +133,17 @@ SCRIPT_CHANGE = {"oneOf": [
 SCRIPT_CHANGE.update(type="object", properties={key: value for variant in SCRIPT_CHANGE["oneOf"] for key, value in variant["properties"].items()})
 
 
-TRACK = obj({"op": enum("add", "update", "remove"), "index": integer(),
-             "kind": enum("value", "position_3d", "rotation_3d", "scale_3d", "method", "bezier"), "path": S,
-             "interpolation": enum("nearest", "linear", "cubic"), "enabled": B, "replace_keys": B,
-             "keys": arr(obj({"time": {"type": "number", "minimum": 0}, "value": VALUE, "transition": N,
-                               "remove": B}, ("time",)), 5000)},
-            anyOf=[{"required": ["index"]}, {"required": ["kind", "path"]}])
+TRACK_PROPERTIES = {"op": enum("add", "update", "remove"), "index": integer(),
+                    "kind": enum("value", "position_3d", "rotation_3d", "scale_3d", "method", "bezier"), "path": S,
+                    "interpolation": enum("nearest", "linear", "cubic"), "enabled": B, "replace_keys": B,
+                    "keys": arr(obj({"time": {"type": "number", "minimum": 0}, "value": VALUE, "transition": N,
+                                      "remove": B}, ("time",)), 5000)}
+TRACK = obj(TRACK_PROPERTIES, anyOf=[
+    obj(TRACK_PROPERTIES, ("index",)),
+    obj(TRACK_PROPERTIES, ("kind", "path")),
+])
+EDIT_SCRIPT_PROPERTIES = {"uri": RES, "if_revision": S, "source": TEXT,
+                          "edits": arr(obj({"range": RANGE, "text": TEXT}, ("range", "text")), 200, 1)}
 GRAPH_NODE = obj({"name": S, "kind": enum("animation", "blend2", "add2", "blend3", "one_shot", "time_scale", "time_seek", "blend_space_1d", "blend_space_2d"),
                   "animation": S, "position": V2, "min": VALUE, "max": VALUE,
                   "points": arr(obj({"animation": S, "position": VALUE}, ("animation", "position")), 64),
@@ -137,7 +159,7 @@ TS_CHANGE = obj({"op": enum("add_atlas", "define_tile", "remove_tile", "add_phys
 
 
 def tool(name, description, properties, required=(), *, read=False, destructive=False, idempotent=False, constraints=None, output=None):
-    schema = obj({"project": {"type": "string", "minLength": 1, "description": "Absolute project path; omit after selecting via get_context."}, **properties}, required, **(constraints or {}))
+    schema = obj({"project": PROJECT, **properties}, required, **(constraints or {}))
     result = {"name": name, "description": description, "inputSchema": schema,
             "annotations": {"readOnlyHint": read, "destructiveHint": destructive,
                             "idempotentHint": idempotent, "openWorldHint": False}}
@@ -146,25 +168,34 @@ def tool(name, description, properties, required=(), *, read=False, destructive=
     return result
 
 
+def resource_scope_constraints(properties: dict, required: tuple, *, default_node: bool = False) -> dict:
+    """Expose complete scope variants so schema-to-TypeScript converters retain fields."""
+    common = {"project": PROJECT, **properties}
+    node = {**common, "target": NODE_RESOURCE, "scope": {"const": "node"}}
+    shared = {**common, "target": RESOURCE, "scope": {"const": "shared"}}
+    return {"oneOf": [obj(node, required if default_node else (*required, "scope")),
+                      obj(shared, (*required, "scope"))]}
+
+
 TOOL_SPECS = [
     tool("install_plugin", "Install and enable the bundled plugin in an existing Godot project before connecting to the editor. Close the project in Godot first. Creates a rollback backup and registers project discovery.", {"project": {**S, "description": "Required absolute path to the directory containing project.godot."}}, ("project",)),
-    tool("get_context", "Read project/engine/product/protocol versions, active scene, selection, unsaved documents and actual run state.", {"scope": enum("all", "project", "editor", "runtime")}, read=True),
+    tool("get_context", "Read project/engine/product/protocol versions, active scene, selection, unsaved documents and actual run state. Use scope=operations with operation_id to query a retained import job.", {"scope": enum("all", "project", "editor", "runtime", "operations"), "operation_id": S}, read=True),
     tool("find_assets", "Search filenames, source text or symbols. Returns reusable res:// URIs and one-based source locations.", {"query": S, "mode": enum("name", "text", "symbol"), "types": arr(S, 32), "scope": {"type": "string", "pattern": "^res://"}, "limit": integer(1, 500)}, ("query",), read=True),
     tool("get_class_info", "Inspect actual engine or project script classes, properties, methods and signals; optionally filter a member.", {"class": S, "member": S}, ("class",), read=True),
     tool("get_scene", "Inspect live scene nodes, unsaved values, connections, inheritance overrides and actual Control layout.", {"scene": RES, "path": NODE_PATH, "properties": {**arr(S), "description": "Property names: omitted means all editor properties when properties is included; [] means none."}, "include": {**arr(enum("properties", "overrides", "connections", "layout"), 4), "description": "Sections to include; omitted means structure only."}, "depth": integer(0, 32)}, read=True),
     tool("open_scene", "Open and activate a saved scene in the editor.", {"scene": RES}, ("scene",), idempotent=True),
     tool("create_scene", "Create a scene with a typed root or inherited source. Saves the new file and returns its root reference.", {"uri": RES, "root_class": S, "root_name": S, "inherits": RES}, ("uri", "root_name")),
-    tool("create_nodes", "Create a flat related-node batch using optional parent_key links, scene instances or duplicates in one undoable edit. Returns actual names and references.", {"parent": REF, "nodes": arr(NODE_SPEC, 1000, 1)}, ("parent", "nodes")),
+    tool("create_nodes", "Create a flat related-node batch. Each node requires name and exactly one of class, instance, or duplicate; parent_key links nodes within the batch. Returns actual names and references.", {"parent": REF, "nodes": arr(NODE_SPEC, 1000, 1)}, ("parent", "nodes")),
     tool("update_nodes", "Batch node properties, names and reparenting in one scene. Use references in the source scene to edit the original. Container-controlled layout is reported.", {"changes": arr(obj({"node": REF, "set": PROPS, "name": S, "parent": REF, "index": integer(0, 10000), "keep_global_transform": B}, ("node",)), 200, 1)}, ("changes",)),
     tool("delete_nodes", "Delete related nodes with undo; report affected persistent connections and NodePath references. Reject inherited members and overlapping selections.", {"nodes": arr(REF, 200, 1)}, ("nodes",), destructive=True),
     tool("save_documents", "Save requested documents; Godot scene saves may also persist linked resources. Reports observed extra source saves, partial failures, and the separate undo boundary.", {"uris": arr({"type": "string", "pattern": "^(res://|godot://resources/).+"}, 200, 1), "save_as": {"type": "object", "additionalProperties": RES}}, ("uris",), idempotent=True, output=SAVE_DOCUMENTS_OUTPUT),
     tool("undo_edit", "Undo the latest MCP edit if its editor history has not changed since. Filesystem operations report their separate rollback scope.", {"edit_id": S}, ("edit_id",), destructive=True),
-    tool("get_resource", "Read resource properties, nested references, known users and import provenance. Sharing scan covers open scenes and indexed project dependencies.", {"target": RESOURCE, "properties": arr(S), "depth": integer(0, 5)}, ("target",), read=True),
+    tool("get_resource", "Read a resource selected by uri or by node plus property, including nested references, known users and import provenance. Sharing scan covers open scenes and indexed project dependencies.", {"target": RESOURCE, "properties": arr(S), "depth": integer(0, 5)}, ("target",), read=True),
     tool("create_resource", "Create an in-memory resource, optionally attach it or save it. Returns a reusable resource URI.", {"class": S, "properties": PROPS, "assign_to": obj({"node": REF, "property": S}, ("node", "property")), "save_as": RES}, ("class",)),
-    tool("update_resource", "Change a resource with explicit node-local or shared scope. Imported shared sources require detaching to an authored resource.", {"target": RESOURCE, "set": PROPS, "scope": enum("node", "shared"), "save_as": RES}, ("target", "set", "scope")),
+    tool("update_resource", "Change a resource with explicit node-local or shared scope. Node scope requires a node plus property selector; imported shared sources require detaching to an authored resource.", {"target": RESOURCE, "set": PROPS, "scope": enum("node", "shared"), "save_as": RES}, ("target", "set", "scope"), constraints=resource_scope_constraints({"target": RESOURCE, "set": PROPS, "scope": enum("node", "shared"), "save_as": RES}, ("target", "set"))),
     tool("read_script", "Read the current source, including unsaved editor/store changes, with its revision and symbols. Ranges use one-based Unicode columns and exclusive ends.", {"uri": RES, "symbol": S, "range": RANGE}, ("uri",), read=True, output=READ_SCRIPT_OUTPUT),
-    tool("create_script", "Create and save the source before validation; compilation or attachment failures leave the file saved and should be retried with edit_script.", {"uri": RES, "source": TEXT, "attach_to": arr(REF, 50), "material": RESOURCE}, ("uri", "source"), output=CREATE_SCRIPT_OUTPUT),
-    tool("edit_script", "Apply a live source edit at an exact revision; changes remain live even when compilation fails, and game hot reload is not promised. Save explicitly to persist.", {"uri": RES, "if_revision": S, "source": TEXT, "edits": arr(obj({"range": RANGE, "text": TEXT}, ("range", "text")), 200, 1)}, ("uri", "if_revision"), constraints={"oneOf": [{"required": ["source"]}, {"required": ["edits"]}]}, output=EDIT_SCRIPT_OUTPUT),
+    tool("create_script", "Create and save the source before validation. If attachment fails, the source remains saved. Repair source with edit_script, then retry node script attachment with update_nodes (script property) or shader attachment with update_resource (ShaderMaterial shader property).", {"uri": RES, "source": TEXT, "attach_to": arr(REF, 50), "material": RESOURCE}, ("uri", "source"), output=CREATE_SCRIPT_OUTPUT),
+    tool("edit_script", "Apply either a complete source replacement or one or more range edits at an exact revision; changes remain live even when compilation fails. Save explicitly to persist.", EDIT_SCRIPT_PROPERTIES, ("uri", "if_revision"), constraints={"oneOf": [obj({"project": PROJECT, **EDIT_SCRIPT_PROPERTIES}, ("uri", "if_revision", "source")), obj({"project": PROJECT, **EDIT_SCRIPT_PROPERTIES}, ("uri", "if_revision", "edits"))]}, output=EDIT_SCRIPT_OUTPUT),
     tool("apply_script_changes", "Apply a bounded batch of live source changes; save=true persists the batch afterward. Changes remain live on compile failure, attachments are outside this batch, and game hot reload is not promised. Validation snapshots exclude caches/symlinks and are limited to 512 MiB and 20,000 files.", {"changes": arr(SCRIPT_CHANGE, 100, 1), "save": {"type": "boolean", "default": False, "description": "Persist the whole batch after application; false leaves live drafts."}}, ("changes",), output=APPLY_SCRIPT_OUTPUT),
     tool("update_signals", "Connect/disconnect persistent signal handlers with optional binds in one scene. Missing handler code is reported.", {"connect": arr(SIGNAL), "disconnect": arr(SIGNAL)}, idempotent=True),
     tool("get_animation", "Inspect animation tracks/keys or AnimationTree states, transitions, blend connections and parameter values.", {"node": REF, "animation": S}, ("node",), read=True),
@@ -172,22 +203,22 @@ TOOL_SPECS = [
     tool("edit_animation_graph", "Build state machines or blend trees/spaces with transitions, connections and parameters, as one undoable graph edit.", {"tree": REF, "root_type": enum("state_machine", "blend_tree"), "states": arr(obj({"name": S, "animation": S, "position": V2, "remove": B}, ("name",))), "transitions": arr(obj({"from": S, "to": S, "condition": S, "expression": TEXT, "advance": enum("auto", "enabled", "disabled"), "cross_fade": {"type": "number", "minimum": 0}, "remove": B}, ("from", "to")), 500), "nodes": arr(GRAPH_NODE), "remove_nodes": arr(S), "connections": arr(obj({"to": S, "input": integer(0, 32), "from": S}, ("to", "input", "from"))), "parameters": PROPS, "active": B}, ("tree",)),
     tool("preview_animation", "Interpolate a pose at a time, capture the real editor viewport, and restore values. Method/audio tracks are not executed.", {"player": REF, "name": S, "time": {"type": "number", "minimum": 0}, "capture": B, "viewport": enum("editor_2d", "editor_3d")}, ("player", "name", "time"), read=True),
     tool("get_tilemap", "Read TileMapLayer cells and reusable atlas/tile/terrain identifiers. Reads a bounded region or up to limit used cells.", {"layer": REF, "region": REGION, "limit": integer(1, 10000)}, ("layer",), read=True),
-    tool("edit_tileset", "Author atlas tiles, collision polygons and terrain/peering rules on a staged TileSet, then commit with undo.", {"target": RESOURCE, "changes": arr(TS_CHANGE, 500, 1), "scope": enum("node", "shared")}, ("target", "changes")),
+    tool("edit_tileset", "Author atlas tiles, collision polygons and terrain/peering rules on a staged TileSet, then commit with undo. Node scope requires a node plus property selector.", {"target": RESOURCE, "changes": arr(TS_CHANGE, 500, 1), "scope": enum("node", "shared")}, ("target", "changes"), constraints=resource_scope_constraints({"target": RESOURCE, "changes": arr(TS_CHANGE, 500, 1), "scope": enum("node", "shared")}, ("target", "changes"), default_node=True)),
     tool("paint_tiles", "Paint cells, regions, patterns or terrain paths and report all actual changes including auto-connected neighbors. Undo restores prior cells.", {"layer": REF, "cells": arr(CELL, 10000), "region": obj({"origin": I2, "size": SIZE, "tile": TILE}, ("origin", "size", "tile")), "pattern": obj({"at": I2, "cells": arr(CELL, 10000, 1)}, ("at", "cells")), "terrain": obj({"set": integer(), "id": integer(-1), "cells": arr(I2, 10000, 1), "mode": enum("connect", "path"), "ignore_empty": B}, ("set", "id", "cells"))}, ("layer",)),
     tool("inspect_runtime", "Read the actual game's scene tree or node properties with run ID and observation time.", {"node": RUN_REF, "properties": arr(S), "depth": integer(0, 10)}, ("node",), read=True),
     tool("capture_viewport", "Return actual PNG pixels plus viewport/capture coordinates. Headless rendering returns an explicit unsupported error.", {"viewport": obj({"kind": enum("game", "editor_2d", "editor_3d"), "run_id": S, "index": integer(0, 3)}, ("kind",)), "rect": obj({"origin": I2, "size": SIZE}, ("origin", "size")), "max_width": integer(1, 4096), "max_height": integer(1, 4096)}, ("viewport",), read=True),
     tool("wait_for_condition", "Observe scene/node/property/signal conditions until satisfied or a bounded timeout; returns last observation.", {"run_id": S, "condition": CONDITION, "timeout_ms": integer(1, 60000), "poll_ms": integer(1, 1000)}, ("run_id", "condition"), read=True),
-    tool("get_diagnostics", "Read a fresh snapshot validation of requested sources plus historical editor log entries; unsaved dependencies are included. Snapshot validation excludes caches/symlinks and is limited to 512 MiB and 20,000 files.", {"uris": arr(RES), "revision": S, "run_id": S, "kinds": arr(enum("error", "warning", "log"), 3), "since": integer(), "limit": integer(1, 1000)}, read=True, output=DIAGNOSTICS_OUTPUT),
+    tool("get_diagnostics", "Read a fresh snapshot validation of requested sources plus historical editor log entries; unsaved dependencies are included. Snapshot validation excludes caches/symlinks and is limited to 512 MiB and 20,000 files.", {"uris": arr(RES), "revision": S, "run_id": S, "kinds": arr(enum("error", "warning", "log"), 3), "since": SAFE_COUNTER, "limit": integer(1, 1000)}, read=True, output=DIAGNOSTICS_OUTPUT),
     tool("sample_performance", "Measure supported Performance monitors over time; include units, sample count and conditions. Unknown metrics are rejected.", {"run_id": S, "duration_ms": integer(1, 60000), "metrics": arr(enum("process_ms", "physics_ms", "fps", "memory_bytes", "objects", "draw_calls", "primitives", "video_memory_bytes"), 8, 1)}, ("run_id", "duration_ms", "metrics"), read=True),
     tool("run_scene", "Start an editor-launched game and wait for the actual runtime helper handshake. Save/restart are explicit (default false).", {"scene": RES, "save": B, "restart": B}),
     tool("stop_game", "Stop the specified run, release injected input, and confirm process termination.", {"run_id": S}, ("run_id",), idempotent=True),
-    tool("send_input", "Send timestamped key/mouse/touch/action events through Godot input. Optionally observe a condition and capture afterward. Capture URI enables conversion from image coordinates.", {"run_id": S, "events": arr(INPUT, 1000, 1), "capture_uri": S, "wait_for": CONDITION, "timeout_ms": integer(1, 60000), "capture_after": B, "release_after": B}, ("run_id", "events")),
+    tool("send_input", "Send timestamped key/mouse/touch/action events through Godot input. Capture position and relative coordinates use capture pixels. Timeouts retain applied effects; retry failed observation or capture rather than repeating the mutation.", {"run_id": S, "events": arr(INPUT, 1000, 1), "capture_uri": S, "wait_for": CONDITION, "timeout_ms": integer(1, 60000), "capture_after": B, "release_after": B}, ("run_id", "events"), output=SEND_INPUT_OUTPUT),
     tool("inspect_debugger", "Read suspended DAP stack/scopes/variables; frame handles become stale on continue. GDScript is supported.", {"run_id": S, "frame_id": integer(), "pause_id": S, "variables_reference": integer()}, ("run_id",), read=True),
     tool("set_breakpoints", "Add/remove MCP-owned breakpoints while preserving user breakpoints. replace=true replaces only MCP-owned entries.", {"breakpoints": arr(obj({"uri": RES, "line": integer(1, 1_000_000), "enabled": B}, ("uri", "line")), 500), "replace": B}, ("breakpoints",), idempotent=True),
     tool("debug_control", "Pause, continue, step over or step into GDScript. step_out reports unsupported on Godot 4.7.2.", {"run_id": S, "action": enum("pause", "continue", "step_over", "step_into", "step_out"), "pause_id": S}, ("run_id", "action")),
     tool("get_settings", "Read project settings, input mappings and autoloads with property metadata.", {"include": arr(enum("project", "input_actions", "autoload"), 3), "keys": arr(S, 500)}, read=True),
     tool("get_export_presets", "Read actual preset names/platforms and installed export-template readiness.", {"preset": S, "platform": S}, read=True),
-    tool("import_assets", "Copy local assets or reimport project assets with options, wait for Godot import, and report resource references and persistence risks.", {"files": arr(obj({"source": FILE, "destination": RES, "options": PROPS, "overwrite": B}, ("destination",)), 500, 1)}, ("files",)),
+    tool("import_assets", "Copy local assets or reimport project assets with options. Timeouts retain applied effects and return an operation ID; query the operation rather than repeating the mutation.", {"files": arr(obj({"source": FILE, "destination": RES, "options": PROPS, "overwrite": B}, ("destination",)), 500, 1)}, ("files",), output=IMPORT_ASSETS_OUTPUT),
     tool("move_assets", "Move project files with UID sidecars and reconcile serialized dependencies. Reject unsaved documents and report dynamic references needing review.", {"moves": arr(obj({"from": RES, "to": RES}, ("from", "to")), 200, 1)}, ("moves",)),
     tool("update_settings", "Apply project settings/input actions/autoload changes with undo; save project.godot explicitly to persist.", {"settings": PROPS, "remove": arr(S), "input_actions": arr(obj({"name": S, "events": arr(MAPPING_EVENT, 64), "deadzone": {"type": "number", "minimum": 0, "maximum": 1}, "remove": B}, ("name",))), "autoloads": arr(obj({"name": S, "path": RES, "enabled": B, "remove": B}, ("name",)))}),
     tool("export_build", "Export with a real Godot preset via CLI and verify the output exists. Export success does not imply artifact execution.", {"preset": S, "output": FILE, "debug": B, "timeout_ms": integer(1000, 180000)}, ("preset", "output")),

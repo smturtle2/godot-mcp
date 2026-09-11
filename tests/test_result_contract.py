@@ -47,7 +47,7 @@ def document(uri: str, state: str = "modified") -> dict:
 
 
 def test_source_tools_publish_structurally_valid_output_schemas_and_tools_list(tmp_path):
-    names = ["create_script", "edit_script", "apply_script_changes", "save_documents", "read_script", "get_diagnostics"]
+    names = ["create_script", "edit_script", "apply_script_changes", "save_documents", "read_script", "get_diagnostics", "send_input", "import_assets"]
 
     async def exercise():
         async with create_client_server_memory_streams() as (client_streams, server_streams):
@@ -63,6 +63,8 @@ def test_source_tools_publish_structurally_valid_output_schemas_and_tools_list(t
                 await asyncio.gather(task, return_exceptions=True)
 
     tools = asyncio.run(exercise())
+    for name, spec in SPECS.items():
+        assert tools[name].input_schema == spec["inputSchema"]
     for name in names:
         assert name in tools
         schema = SPECS[name]["outputSchema"]
@@ -111,3 +113,20 @@ def test_tool_error_remains_an_error_response(tmp_path):
     result = run_call(tmp_path, {"read_script": ToolError("FILE_NOT_FOUND", "missing")}, "read_script", {"uri": "res://missing.gd"})
     assert result.is_error
     assert result.structured_content["error"]["code"] == "FILE_NOT_FOUND"
+
+
+def test_partial_send_input_preserves_effects_and_nested_failures(tmp_path):
+    payload = {"status": "partial", "complete": False, "failures": [{"phase": "capture", "code": "CAPTURE_FAILED", "message": "capture unavailable", "details": {"display": "headless"}}], "pending": [], "processed": 2, "elapsed_ms": 30, "held_inputs": 1, "capture": {"error": {"code": "CAPTURE_FAILED", "message": "capture unavailable"}}, "recovery": "Retry capture.", "run_id": "run-1", "observed_at_usec": 2_147_483_648, "frame": 2_147_483_648}
+    result = run_call(tmp_path, {"send_input": payload}, "send_input", {"run_id": "run-1", "events": [{"type": "key", "key": "Space", "pressed": True}]})
+    assert result.is_error
+    assert result.structured_content["processed"] == 2
+    assert result.structured_content["failures"][0]["details"]["display"] == "headless"
+    Draft202012Validator(SPECS["send_input"]["outputSchema"]).validate(result.structured_content)
+
+
+def test_completed_import_assets_preserves_operation_and_undo_contract(tmp_path):
+    payload = {"status": "completed", "complete": True, "failures": [], "pending": [], "operation_id": "op-1", "phase": "completed", "saved": True, "files_written": ["res://a.png"], "options_changed": [], "changed_paths": ["res://a.png.import"], "assets": [{"uri": "res://a.png", "imported": True, "resource": {"$type": "Resource", "uri": "res://a.png", "class": "CompressedTexture2D"}, "preservation": "kept"}], "edit_id": "edit-1", "undo_state": "available", "undo": {"edit_id": "edit-1", "scope": ["files"]}}
+    result = run_call(tmp_path, {"import_assets": payload}, "import_assets", {"files": [{"destination": "res://a.png"}]})
+    assert not result.is_error
+    assert result.structured_content["operation_id"] == "op-1"
+    Draft202012Validator(SPECS["import_assets"]["outputSchema"]).validate(result.structured_content)

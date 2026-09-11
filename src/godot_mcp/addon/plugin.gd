@@ -3,6 +3,8 @@ extends EditorPlugin
 ## All editor mutations are serialized here, on Godot's main thread.
 const Version = preload("res://addons/godot_mcp/version.gd")
 const Codec = preload("res://addons/godot_mcp/codec.gd")
+const ResourceTarget = preload("res://addons/godot_mcp/resource_target.gd")
+const PropertyEdits = preload("res://addons/godot_mcp/property_edits.gd")
 const LogBuffer = preload("res://addons/godot_mcp/log_buffer.gd")
 const Scenes = preload("res://addons/godot_mcp/scenes.gd")
 const Documents = preload("res://addons/godot_mcp/documents.gd")
@@ -23,6 +25,9 @@ var resources: Dictionary = {}
 var edits: Array[Dictionary] = []
 var modules: Array[RefCounted] = []
 var documents: RefCounted
+var resource_targets: RefCounted
+var property_edits: RefCounted
+var assets: RefCounted
 var runtime: RefCounted
 var debugger: EditorDebuggerPlugin
 var logs: Logger
@@ -42,8 +47,11 @@ func _enter_tree() -> void:
 	logs = LogBuffer.new()
 	OS.add_logger(logs)
 	documents = Documents.new(self)
+	resource_targets = ResourceTarget.new(self)
+	property_edits = PropertyEdits.new(self)
 	runtime = Runtime.new(self)
-	modules = [Scenes.new(self), documents, Resources.new(self), Animations.new(self), Tiles.new(self), Assets.new(self), runtime]
+	assets = Assets.new(self)
+	modules = [Scenes.new(self), documents, Resources.new(self), Animations.new(self), Tiles.new(self), assets, runtime]
 	debugger = Debugger.new()
 	debugger.host = self
 	add_debugger_plugin(debugger)
@@ -86,6 +94,8 @@ func _enter_tree() -> void:
 
 func _exit_tree() -> void:
 	set_process(false)
+	if documents: documents.store.shutdown()
+	if assets: assets.imports.shutdown()
 	for item: Dictionary in peers:
 		item.peer.close()
 	peers.clear()
@@ -216,12 +226,14 @@ func fail(code: String, message: String, details: Dictionary = {}) -> Dictionary
 	return {"error": {"code": code, "message": message, "details": details}}
 
 func context(p: Dictionary) -> Dictionary:
+	if p.get("scope") == "operations": return assets.imports.state(str(p.get("operation_id", "")))
 	var selected: Array = []
 	for node: Node in EditorInterface.get_selection().get_selected_nodes():
 		selected.append(node_ref(node))
 	var root := EditorInterface.get_edited_scene_root()
 	var data: Dictionary = {"project": ProjectSettings.globalize_path("res://"), "engine": Engine.get_version_info(), "version": Version.PRODUCT, "protocol": Version.PROTOCOL, "editor_epoch": epoch, "active_scene": root.scene_file_path if root else null, "selected_nodes": selected, "unsaved_scenes": EditorInterface.get_unsaved_scenes(), "unsaved_scripts": EditorInterface.get_script_editor().get_unsaved_files(), "unsaved_resources": dirty_resources(), "running": EditorInterface.is_playing_scene(), "run_id": runtime.run_id, "runtime_connected": runtime.ready, "debugger": debugger.state()}
 	var scope: String = p.get("scope", "all")
+	data.pending_operations = assets.imports.pending()
 	if scope == "project":
 		return {"project": data.project, "engine": data.engine, "version": data.version, "protocol": data.protocol}
 	if scope == "runtime":
@@ -288,12 +300,10 @@ func resource_uri(uri: String) -> Resource:
 	return null
 
 func resolve_resource(target: Dictionary) -> Resource:
-	if target.has("uri"):
-		return resource_uri(str(target.uri))
-	var node := resolve_node(target.get("node", {}))
-	if not node or property_info(node, str(target.get("property", ""))).is_empty():
-		return null
-	return node.get(str(target.property)) as Resource
+	return resolve_resource_target(target).get("resource") as Resource
+
+func resolve_resource_target(target: Dictionary, scope: String = "", expected_class: String = "Resource") -> Dictionary:
+	return resource_targets.resolve(target, scope, expected_class)
 
 func encode(value: Variant) -> Variant:
 	return Codec.encode(value, register_resource)
@@ -309,38 +319,13 @@ func dirty_resources() -> Array:
 	return values
 
 func property_info(object: Object, property: String) -> Dictionary:
-	for info: Dictionary in object.get_property_list():
-		if str(info.name) == property:
-			return info
-	return {}
+	return property_edits.info(object, property)
+
+func plan_property_changes(object: Object, values: Dictionary) -> Dictionary:
+	return property_edits.plan(object, values)
 
 func property_error(object: Object, values: Dictionary) -> String:
-	for key: String in values:
-		var info: Dictionary = property_info(object, key)
-		if info.is_empty(): return "Unknown property: " + key
-		if int(info.usage) & PROPERTY_USAGE_READ_ONLY: return "Read-only property: " + key
-		var value: Variant = decode(values[key])
-		if values[key] is Dictionary and values[key].get("$type") == "Resource" and value == null:
-			return "Resource reference does not exist: " + str(values[key].get("uri"))
-		var expected: int = int(info.type)
-		if value == null:
-			if expected not in [TYPE_NIL, TYPE_OBJECT]: return "Null is not valid for " + key
-		elif expected != TYPE_NIL and typeof(value) != expected:
-			if not ((expected == TYPE_FLOAT and value is int) or (expected == TYPE_INT and value is float and float(int(value)) == value) or (expected == TYPE_STRING_NAME and value is String)):
-				return "Wrong type for " + key + ": expected " + type_string(expected)
-		if expected == TYPE_OBJECT and value != null and not str(info.class_name).is_empty() and not value.is_class(info.class_name):
-			return key + " requires " + str(info.class_name)
-	return ""
-
-func property_changes(object: Object, values: Dictionary) -> Array[Dictionary]:
-	var changes: Array[Dictionary] = []
-	for key: String in values:
-		var value: Variant = decode(values[key])
-		var info: Dictionary = property_info(object, key)
-		if int(info.get("type", TYPE_NIL)) == TYPE_INT and value is float: value = int(value)
-		if int(info.get("type", TYPE_NIL)) == TYPE_STRING_NAME and value is String: value = StringName(value)
-		changes.append({"object": object, "property": key, "before": object.get(key), "after": value})
-	return changes
+	return str(plan_property_changes(object, values).get("error", {}).get("message", ""))
 
 func begin_edit(label: String, context_object: Object) -> void:
 	get_undo_redo().create_action("MCP: " + label, UndoRedo.MERGE_DISABLE, context_object)

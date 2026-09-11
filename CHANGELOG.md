@@ -1,3 +1,15 @@
+# v4.7.2_10
+
+- Publish complete object variants for structured tool inputs while preserving optional project selection and default TileSet node scope. Reject mixed resource selectors in both schemas and the editor before mutation.
+- Track native editor buffer changes and saved revision baselines. Block source and scene saves on external changes or unknown baselines, and protect unsaved MCP drafts during filesystem operations.
+- Preserve mouse button state across input batches and releases, and transform capture-relative movement along with positions. Use JSON-safe integer ranges for diagnostic and runtime counters.
+- Report input condition errors, requested condition timeouts and capture failures as partial MCP errors while retaining applied effects and recovery guidance. Apply diagnostic kind filters before pagination without changing source validity.
+- Retain asset import operation IDs, phases and file journals through timeout or partial writes. Query progress through `get_context(scope="operations")`; register guarded undo after import completion and preserve externally changed files.
+- Share snapshot traversal and exclusions, skip unrelated symlinks, and report unavailable validation for excluded dependencies. Collect bounded stdout/stderr bytes before UTF-8 decoding.
+- Share property and script attachment compatibility checks. Return executable retry arguments for script and shader attachment failures, and document state, conflict and recovery behavior.
+
+Validated with 80 unit tests, 27 real Godot integration cases, and isolated installation, reinstall, repair and stdio checks on Linux x86_64. Refresh MCP tools after updating; the source schemas and stdio payloads are verified, while client-specific model schema rendering still requires a reconnect check. Native HiDPI/stretch and other operating systems remain unverified.
+
 # v4.7.2_9
 
 - Preserve canonical script resource identity across creation, attachment, editing, and scene saving.

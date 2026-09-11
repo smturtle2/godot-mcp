@@ -2,7 +2,9 @@ extends Node
 ## Inert without an attached editor debugger. No network listener in game builds.
 const Codec = preload("res://addons/godot_mcp/codec.gd")
 const LogBuffer = preload("res://addons/godot_mcp/log_buffer.gd")
+const OperationResult = preload("res://addons/godot_mcp/operation_result.gd")
 var held: Dictionary = {}
+var held_mouse_buttons: int = 0
 var captures: Dictionary = {}
 var logs: Logger
 var busy: bool = false
@@ -67,7 +69,7 @@ func dispatch(method: String, p: Dictionary) -> Dictionary:
 		"release_input":
 			release_input()
 			return {"released": true}
-		"get_diagnostics": return logs.read(int(p.get("since", 0)), int(p.get("limit", 200)))
+		"get_diagnostics": return logs.read(int(p.get("since", 0)), int(p.get("limit", 200)), p.get("kinds", []))
 	return fail("UNKNOWN_TOOL", method)
 
 func describe(node: Node, properties: Array, depth: int) -> Dictionary:
@@ -109,19 +111,33 @@ func capture(p: Dictionary) -> Dictionary:
 func release_input() -> void:
 	for event: InputEvent in held.values():
 		if event is InputEventKey or event is InputEventMouseButton or event is InputEventScreenTouch or event is InputEventAction:
-			event.pressed = false
+			if event is InputEventMouseButton:
+				held_mouse_buttons &= ~mouse_button_bit(event.button_index)
+				event.button_mask = held_mouse_buttons
+				event.pressed = false
 			Input.parse_input_event(event)
 	held.clear()
+	held_mouse_buttons = 0
 
 func event_key(spec: Dictionary) -> String:
 	return str(spec.type) + ":" + str(spec.get("key", spec.get("button", spec.get("action", spec.get("index", 0)))))
+
+func mouse_button_bit(button: int) -> int:
+	if button < MOUSE_BUTTON_LEFT or button > MOUSE_BUTTON_MIDDLE: return 0
+	return 1 << (button - MOUSE_BUTTON_LEFT)
+
+func capture_position(position: Vector2, info: Dictionary) -> Vector2:
+	return (Vector2(info.rect.position) + position * Vector2(info.rect.size) / Vector2(info.size)) * Vector2(info.viewport) / Vector2(info.original)
+
+func capture_delta(delta: Vector2, info: Dictionary) -> Vector2:
+	return delta * Vector2(info.rect.size) / Vector2(info.size) * Vector2(info.viewport) / Vector2(info.original)
 
 func make_event(spec: Dictionary, capture_uri: String) -> Dictionary:
 	var position := Codec.v2(spec.get("position", {}))
 	if not capture_uri.is_empty() and spec.has("position"):
 		if not captures.has(capture_uri): return fail("STALE_CAPTURE", "Capture metadata expired or belongs to another run.")
 		var info: Dictionary = captures[capture_uri]
-		position = (Vector2(info.rect.position) + position * Vector2(info.rect.size) / Vector2(info.size)) * Vector2(info.viewport) / Vector2(info.original)
+		position = capture_position(position, info)
 	var event: InputEvent
 	match str(spec.get("type", "")):
 		"key":
@@ -146,6 +162,7 @@ func make_event(spec: Dictionary, capture_uri: String) -> Dictionary:
 			mouse.position = position
 			mouse.global_position = position
 			mouse.relative = Codec.v2(spec.get("relative", {}))
+			if not capture_uri.is_empty(): mouse.relative = capture_delta(mouse.relative, captures[capture_uri])
 			event = mouse
 		"touch":
 			var touch := InputEventScreenTouch.new()
@@ -158,6 +175,7 @@ func make_event(spec: Dictionary, capture_uri: String) -> Dictionary:
 			touch.index = int(spec.get("index", 0))
 			touch.position = position
 			touch.relative = Codec.v2(spec.get("relative", {}))
+			if not capture_uri.is_empty(): touch.relative = capture_delta(touch.relative, captures[capture_uri])
 			event = touch
 		"action":
 			if not InputMap.has_action(spec.get("action", "")): return fail("ACTION_NOT_FOUND", "The input action is not defined.")
@@ -249,19 +267,38 @@ func send_input(p: Dictionary) -> Dictionary:
 	var start: int = Time.get_ticks_msec()
 	for item: Dictionary in events:
 		while Time.get_ticks_msec() - start < item.at_ms: await get_tree().process_frame
+		if item.event is InputEventMouseButton:
+			var bit: int = mouse_button_bit(item.event.button_index)
+			if bit != 0:
+				if item.event.pressed: held_mouse_buttons |= bit
+				else: held_mouse_buttons &= ~bit
+			item.event.button_mask = held_mouse_buttons
+		elif item.event is InputEventMouseMotion:
+			item.event.button_mask = held_mouse_buttons
 		Input.parse_input_event(item.event)
 		if item.spec.has("pressed"):
 			var key: String = event_key(item.spec)
-			if item.spec.pressed: held[key] = item.event.duplicate()
+			if item.event is InputEventMouseButton and mouse_button_bit(item.event.button_index) == 0:
+				pass
+			elif item.spec.pressed: held[key] = item.event.duplicate()
 			else: held.erase(key)
 		await get_tree().process_frame
 	var result: Dictionary = {"processed": events.size(), "elapsed_ms": Time.get_ticks_msec() - start}
 	if p.get("release_after", false): release_input()
 	result.held_inputs = held.size()
-	if p.has("wait_for"): result.condition = await wait_condition(p.wait_for, int(p.get("timeout_ms", 5000)), 16, watch)
+	var failures: Array = []
+	if p.has("wait_for"):
+		result.condition = await wait_condition(p.wait_for, int(p.get("timeout_ms", 5000)), 16, watch)
+		if result.condition.has("error"):
+			failures.append(OperationResult.failure("condition", result.condition.error))
+		elif not result.condition.get("satisfied", false):
+			failures.append(OperationResult.failure("condition", {"code": "CONDITION_TIMEOUT", "message": "Input was sent, but the requested condition was not satisfied before the timeout."}))
 	else: unwatch(watch)
-	if p.get("capture_after", false): result.capture = await capture({})
-	return result
+	if p.get("capture_after", false):
+		result.capture = await capture({})
+		if result.capture.has("error"): failures.append(OperationResult.failure("capture", result.capture.error))
+	if not failures.is_empty(): result.recovery = "Input events remain applied. Retry only the failed observation or capture; do not resend the input sequence automatically."
+	return OperationResult.finish(result, not events.is_empty(), failures)
 
 func sample_performance(p: Dictionary) -> Dictionary:
 	var metrics: Dictionary = {"process_ms": [Performance.TIME_PROCESS, 1000.0, "ms"], "physics_ms": [Performance.TIME_PHYSICS_PROCESS, 1000.0, "ms"], "fps": [Performance.TIME_FPS, 1.0, "frames/s"], "memory_bytes": [Performance.MEMORY_STATIC, 1.0, "bytes"], "objects": [Performance.OBJECT_COUNT, 1.0, "count"], "draw_calls": [Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME, 1.0, "calls/frame"], "primitives": [Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME, 1.0, "primitives/frame"], "video_memory_bytes": [Performance.RENDER_VIDEO_MEM_USED, 1.0, "bytes"]}

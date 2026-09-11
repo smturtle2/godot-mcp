@@ -64,6 +64,7 @@ def test_contract_rejects_unknown_args_traversal_invalid_revision_and_duration()
 def test_scene_include_and_script_source_batch_contracts():
     assert_valid("get_scene", {"include": ["layout", "properties"], "properties": []})
     assert_valid("edit_script", {"uri": "res://main.gd", "if_revision": "r1", "source": "extends Node\n"})
+    assert_valid("edit_script", {"project": "/tmp/project", "uri": "res://main.gd", "if_revision": "r1", "source": "extends Node\n"})
     assert_valid("apply_script_changes", {"changes": [
         {"uri": "res://new.gd", "create": True, "source": "extends Node\n"},
         {"uri": "res://main.gd", "if_revision": "r1", "edits": [{
@@ -99,3 +100,93 @@ def test_flat_create_nodes_and_strict_input_variants_have_no_refs():
 
     assert not has_ref(SPECS["create_nodes"]["inputSchema"])
     assert not has_ref(SPECS["send_input"]["inputSchema"])
+
+
+def test_union_item_shapes_are_named_and_keep_variant_requirements():
+    nodes = SPECS["create_nodes"]["inputSchema"]["properties"]["nodes"]["items"]
+    assert set(nodes["properties"]) >= {"key", "parent_key", "name", "class", "instance", "duplicate", "properties"}
+    assert all(set(variant["properties"]) >= set(nodes["properties"]) for variant in nodes["oneOf"])
+    assert_invalid("create_nodes", {"parent": {"scene": "res://main.tscn", "path": "root"},
+                                     "nodes": [{"name": "Thing"}]})
+
+    edit = SPECS["edit_script"]["inputSchema"]
+    assert all(set(variant["properties"]) >= {"uri", "if_revision", "source", "edits"}
+               for variant in edit["oneOf"])
+    assert_valid("edit_script", {"uri": "res://main.gd", "if_revision": "r1", "edits": [
+        {"range": {"start": {"line": 1, "column": 1}, "end": {"line": 1, "column": 1}}, "text": "# edit\n"},
+    ]})
+    assert_valid("edit_script", {"project": "/tmp/project", "uri": "res://main.gd", "if_revision": "r1", "edits": [
+        {"range": {"start": {"line": 1, "column": 1}, "end": {"line": 1, "column": 1}}, "text": "# edit\n"},
+    ]})
+
+
+def test_resource_and_condition_union_shapes_are_explicit():
+    resource = SPECS["get_resource"]["inputSchema"]["properties"]["target"]
+    assert [set(variant["properties"]) for variant in resource["oneOf"]] == [{"uri"}, {"node", "property"}]
+    assert_valid("get_resource", {"target": {"uri": "res://material.tres"}})
+    assert_invalid("get_resource", {"target": {"node": {"scene": "res://main.tscn", "path": "root"}}})
+
+    condition = SPECS["wait_for_condition"]["inputSchema"]["properties"]["condition"]
+    assert len(condition["oneOf"]) == 4
+    assert all(set(variant["properties"]) >= {"type", "uri", "node", "property", "value", "signal"}
+               for variant in condition["oneOf"])
+    assert_valid("wait_for_condition", {"run_id": "run-1", "condition": {
+        "type": "property", "node": {"run_id": "run-1", "path": "/root/Main"},
+        "property": "visible", "value": True,
+    }})
+
+
+def test_animation_track_shape_and_action_descriptions_are_preserved():
+    tracks = SPECS["edit_animation"]["inputSchema"]["properties"]["tracks"]["items"]
+    assert set(tracks["properties"]) >= {"op", "index", "kind", "path", "keys"}
+    assert all(set(variant["properties"]) >= set(tracks["properties"]) for variant in tracks["anyOf"])
+    assert "exactly one of class, instance, or duplicate" in SPECS["create_nodes"]["description"]
+    assert "complete source replacement or one or more range edits" in SPECS["edit_script"]["description"]
+
+
+def test_resource_node_scope_and_input_timestamp_bounds_are_enforced():
+    node_target = {"node": {"scene": "res://main.tscn", "path": "root/Main"}, "property": "material"}
+    assert_valid("update_resource", {"target": node_target, "set": {}, "scope": "node"})
+    assert_invalid("update_resource", {"target": {"uri": "res://material.tres"}, "set": {}, "scope": "node"})
+    tile_change = {"op": "add_physics_layer"}
+    assert_valid("edit_tileset", {"target": node_target, "changes": [tile_change], "scope": "node"})
+    assert_valid("edit_tileset", {"project": "/tmp/project", "target": node_target, "changes": [tile_change]})
+    assert_valid("update_resource", {"project": "/tmp/project", "target": node_target, "set": {}, "scope": "node"})
+    assert_invalid("edit_tileset", {"target": {"uri": "res://tileset.tres"}, "changes": [tile_change], "scope": "node"})
+    assert_invalid("send_input", {"run_id": "run-1", "events": [
+        {"type": "key", "key": "Space", "pressed": True, "at_ms": 60001},
+    ]})
+    assert "Repair source with edit_script" in SPECS["create_script"]["description"]
+
+
+def test_resource_selectors_reject_partial_and_mixed_forms_across_tools():
+    node = {"scene": "res://main.tscn", "path": "root/Main"}
+    selectors = [
+        {"uri": "res://material.tres", "node": node},
+        {"uri": "res://material.tres", "property": "material"},
+        {"uri": "res://material.tres", "node": node, "property": "material"},
+        {"node": node}, {"property": "material"}, {},
+    ]
+    for target in selectors:
+        assert_invalid("get_resource", {"target": target})
+        assert_invalid("create_script", {"uri": "res://main.gd", "source": "extends Node\n", "material": target})
+        assert_invalid("update_resource", {"target": target, "set": {}, "scope": "node"})
+        assert_invalid("update_resource", {"target": target, "set": {}, "scope": "shared"})
+        assert_invalid("edit_tileset", {"target": target, "changes": [{"op": "add_physics_layer"}], "scope": "node"})
+        assert_invalid("edit_tileset", {"target": target, "changes": [{"op": "add_physics_layer"}], "scope": "shared"})
+
+    node_target = {"node": node, "property": "material"}
+    uri_target = {"uri": "res://material.tres"}
+    assert_valid("create_script", {"uri": "res://main.gd", "source": "extends Node\n", "material": uri_target})
+    assert_valid("create_script", {"uri": "res://main.gd", "source": "extends Node\n", "material": node_target})
+    for name, changes in [("update_resource", {"set": {}, "scope": "shared"}),
+                          ("edit_tileset", {"changes": [{"op": "add_physics_layer"}], "scope": "shared"})]:
+        assert_valid(name, {"target": uri_target, **changes})
+        assert_valid(name, {"target": node_target, **changes})
+
+
+def test_diagnostic_timestamp_uses_safe_integer_range():
+    entry = {"entries": [{"time_usec": 2_147_483_648, "cursor": 2_147_483_648}],
+             "sources": [], "entries_are_history": True, "origin": "editor"}
+    Draft202012Validator(SPECS["get_diagnostics"]["outputSchema"]).validate(entry)
+    assert_invalid("get_diagnostics", {"since": 9_007_199_254_740_992})

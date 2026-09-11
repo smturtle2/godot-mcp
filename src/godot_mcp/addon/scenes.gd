@@ -196,11 +196,11 @@ func build_node(spec: Dictionary, budget: Array[int]) -> Dictionary:
 	if not node: return host.fail("INVALID_NODE", "Node type or instance/duplicate source cannot be constructed.")
 	node.name = name
 	var values: Dictionary = spec.get("properties", {})
-	var error: String = host.property_error(node, values)
-	if not error.is_empty():
+	var property_plan: Dictionary = host.plan_property_changes(node, values)
+	if property_plan.has("error"):
 		node.free()
-		return host.fail("INVALID_PROPERTY", error)
-	for change: Dictionary in host.property_changes(node, values): node.set(change.property, change.after)
+		return property_plan
+	for change: Dictionary in property_plan.get("changes", []): node.set(change.property, change.after)
 	return {"node": node}
 
 func set_owner(node: Node, root: Node) -> void:
@@ -312,12 +312,12 @@ func update_nodes(p: Dictionary) -> Dictionary:
 		var values: Dictionary = change.get("set", {})
 		if node.get_parent() is Container and (values.has("position") or values.has("size")):
 			return host.fail("CONTAINER_LAYOUT", "Parent Container determines position and size. Edit size flags/minimum sizes or the parent settings.")
-		var error: String = host.property_error(node, values)
-		if not error.is_empty(): return host.fail("INVALID_PROPERTY", error)
+		var property_plan: Dictionary = host.plan_property_changes(node, values)
+		if property_plan.has("error"): return property_plan
 		if change.has("name") and (str(change.name).is_empty() or str(change.name) != str(change.name).validate_node_name()): return host.fail("INVALID_NAME", "Invalid node name.")
 		if (change.has("parent") or change.has("name")) and node != root:
-			error = structural_error(node, root)
-			if not error.is_empty(): return host.fail("INHERITED_NODE", error)
+			var structural: String = structural_error(node, root)
+			if not structural.is_empty(): return host.fail("INHERITED_NODE", structural)
 		var parent: Node = node.get_parent()
 		if change.has("parent"):
 			parent = host.resolve_node(change.parent)
@@ -325,7 +325,7 @@ func update_nodes(p: Dictionary) -> Dictionary:
 		if change.has("name") and parent:
 			var sibling: Node = parent.get_node_or_null(NodePath(str(change.name)))
 			if sibling and sibling != node: return host.fail("NAME_CONFLICT", "A sibling already has this name.")
-		staged.append({"node": node, "change": change, "parent": parent, "old_parent": node.get_parent(), "old_index": node.get_index(), "old_owner": node.owner})
+		staged.append({"node": node, "change": change, "property_plan": property_plan, "parent": parent, "old_parent": node.get_parent(), "old_index": node.get_index(), "old_owner": node.owner})
 		targets.append(node)
 	if staged.is_empty(): return host.fail("EMPTY_EDIT", "Provide changes.")
 	# Combined reparent operations can form a cycle even when each is valid alone.
@@ -348,7 +348,7 @@ func update_nodes(p: Dictionary) -> Dictionary:
 		if node.owner and node.owner != root and not root.is_editable_instance(node.owner):
 			undo.add_do_method(root, "set_editable_instance", node.owner, true)
 			undo.add_undo_method(root, "set_editable_instance", node.owner, false)
-		host.add_changes(host.property_changes(node, change.get("set", {})))
+		host.add_changes(item.property_plan.get("changes", []))
 		if change.has("name"):
 			undo.add_do_property(node, "name", StringName(change.name))
 			undo.add_undo_property(node, "name", node.name)

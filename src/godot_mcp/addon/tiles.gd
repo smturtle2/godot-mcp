@@ -74,11 +74,10 @@ func apply_resource(target: Resource, value: Resource) -> void:
 	EditorInterface.set_object_edited(target, true)
 
 func edit_tileset(p: Dictionary) -> Dictionary:
-	var target: Dictionary = p.get("target", {})
-	var original: TileSet = host.resolve_resource(target) as TileSet
-	if not original: return host.fail("INVALID_RESOURCE", "Target must resolve to a TileSet.")
 	var scope: String = p.get("scope", "node")
-	if scope == "node" and not target.has("node"): return host.fail("SCOPE_REQUIRED", "Node scope requires a node property target.")
+	var target: Dictionary = host.resolve_resource_target(p.get("target", {}), scope, "TileSet")
+	if target.has("error"): return target
+	var original: TileSet = target.resource
 	if scope == "shared" and FileAccess.file_exists(original.resource_path.get_slice("::", 0) + ".import"): return host.fail("IMPORTED_RESOURCE", "Detach an imported TileSet with node scope.")
 	var ts: TileSet = original.duplicate(true)
 	var keys: Dictionary = {}
@@ -166,8 +165,8 @@ func edit_tileset(p: Dictionary) -> Dictionary:
 		changed.append({"op": op, "source_id": source_id, "atlas": {"x": at.x, "y": at.y}, "alternative": alternative})
 	var result: Dictionary
 	if scope == "node":
-		var node: Node = host.resolve_node(target.node)
-		result = host.commit_changes([{"object": node, "property": target.property, "before": original, "after": ts}], host.scene_root(target.node.scene), "Edit TileSet")
+		var node: Node = target.node
+		result = host.commit_changes([{"object": node, "property": target.property, "before": original, "after": ts}], host.scene_root(target.scene), "Edit TileSet")
 	else:
 		host.begin_edit("Edit shared TileSet", original)
 		host.get_undo_redo().add_do_method(self, "apply_resource", original, ts)
@@ -176,6 +175,7 @@ func edit_tileset(p: Dictionary) -> Dictionary:
 	result.changed = changed
 	result.keys = keys
 	result.scope = scope
+	result.target = target.reference
 	result.tileset = tile_info(ts)
 	return result
 

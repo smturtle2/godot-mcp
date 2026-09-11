@@ -4,6 +4,7 @@ extends RefCounted
 var host: EditorPlugin
 const SourceStore = preload("res://addons/godot_mcp/source_store.gd")
 const SourceValidation = preload("res://addons/godot_mcp/source_validation.gd")
+const LogBuffer = preload("res://addons/godot_mcp/log_buffer.gd")
 var store: RefCounted
 var validator: RefCounted
 var owned_breakpoints: Dictionary = {}
@@ -77,6 +78,8 @@ func read_script(p: Dictionary) -> Dictionary:
 
 func validate_sources(uris: Array) -> Dictionary:
 	var overlays: Dictionary = store.overlays()
+	var conflicts: Array = store.conflicts()
+	if not conflicts.is_empty(): return host.fail("EXTERNAL_CHANGE", "Resolve source buffer and disk conflicts before validation.", {"conflicts": conflicts})
 	var before: Dictionary = overlays.duplicate(true)
 	var revisions: Dictionary = {}
 	for uri: String in uris:
@@ -105,7 +108,7 @@ func validate_source(uri: String, _resource: Resource, _source: String) -> Dicti
 func document_state(uri: String) -> Dictionary:
 	var info: Dictionary = source_info(uri)
 	if info.has("error"): return {"uri": uri, "state": "unavailable"}
-	return {"uri": uri, "state": "saved" if not info.unsaved else ("modified" if info.exists_on_disk else "draft"), "revision": info.revision, "disk_revision": info.disk_revision, "saved": not info.unsaved}
+	return {"uri": uri, "state": "saved" if not info.unsaved else ("modified" if info.exists_on_disk else "draft"), "revision": info.revision, "disk_revision": info.disk_revision, "base_disk_revision": info.base_disk_revision, "baseline_known": info.baseline_known, "conflict": info.conflict, "saved": not info.unsaved}
 
 func create_script(p: Dictionary) -> Dictionary:
 	var uri: String = p.get("uri", "")
@@ -143,12 +146,22 @@ func create_script(p: Dictionary) -> Dictionary:
 	var changes: Array[Dictionary] = []
 	var attachment_errors: Array = []
 	for node: Node in nodes:
-		if resource is Script and (not live_valid or not node.is_class(resource.get_instance_base_type())):
-			attachment_errors.append({"node": host.node_ref(node), "code": "COMPILE_FAILED" if diagnostics.get("valid") != true else ("LIVE_RELOAD_FAILED" if not live_valid else "INCOMPATIBLE_BASE"), "message": "Validation must succeed, the live script must reload, and its base type must match the node."})
+		if resource is Script and not live_valid:
+			attachment_errors.append({"node": host.node_ref(node), "code": "COMPILE_FAILED" if diagnostics.get("valid") != true else "LIVE_RELOAD_FAILED", "message": "Validation must succeed and the live script must reload before attaching.", "retry": {"tool": "update_nodes", "arguments": {"changes": [{"node": host.node_ref(node), "set": {"script": {"$type": "Resource", "uri": uri}}}]}}})
 		else:
-			changes.append({"object": node, "property": "script", "before": node.get_script(), "after": resource})
-	if material and diagnostics.get("valid") == true: changes.append({"object": material, "property": "shader", "before": material.shader, "after": resource})
-	elif material: attachment_errors.append({"resource": host.register_resource(material), "code": "COMPILE_FAILED", "message": "Shader was saved; attachment skipped because validation did not pass."})
+			var node_plan: Dictionary = host.plan_property_changes(node, {"script": {"$type": "Resource", "uri": uri}})
+			if node_plan.has("error"):
+				attachment_errors.append({"node": host.node_ref(node), "code": "INCOMPATIBLE_BASE", "message": str(node_plan.error.get("message", "Script cannot be attached.")), "retry": {"tool": "update_nodes", "arguments": {"changes": [{"node": host.node_ref(node), "set": {"script": {"$type": "Resource", "uri": uri}}}]}}})
+			else:
+				changes.append_array(node_plan.get("changes", []))
+	if material and diagnostics.get("valid") == true:
+		var material_plan: Dictionary = host.plan_property_changes(material, {"shader": {"$type": "Resource", "uri": uri}})
+		if material_plan.has("error"):
+			attachment_errors.append({"resource": host.register_resource(material), "code": "INCOMPATIBLE_SHADER", "message": str(material_plan.error.get("message", "Shader cannot be attached to this material.")), "retry": {"tool": "update_resource", "arguments": {"target": {"uri": host.register_resource(material)}, "scope": "shared", "set": {"shader": {"$type": "Resource", "uri": uri}}}}})
+		else:
+			changes.append_array(material_plan.get("changes", []))
+	elif material:
+		attachment_errors.append({"resource": host.register_resource(material), "code": "COMPILE_FAILED", "message": "Shader was saved; attachment skipped because validation did not pass.", "retry": {"tool": "update_resource", "arguments": {"target": {"uri": host.register_resource(material)}, "scope": "shared", "set": {"shader": {"$type": "Resource", "uri": uri}}}}})
 	var result: Dictionary = {"uri": uri, "revision": source.sha256_text(), "saved": true, "diagnostics": diagnostics, "attached": [], "attachment_errors": attachment_errors}
 	if not changes.is_empty():
 		var edit: Dictionary = host.commit_changes(changes, root if root else material, "Attach source")
@@ -300,6 +313,10 @@ func save_documents(p: Dictionary) -> Dictionary:
 			if target != uri: error = ERR_INVALID_PARAMETER
 			else: error = ProjectSettings.save()
 		elif uri.ends_with(".tscn"):
+			var conflicts: Array = store.conflicts()
+			if not conflicts.is_empty():
+				failed.append({"uri": uri, "code": "EXTERNAL_CHANGE", "error": "Scene saving may also save conflicting source buffers.", "conflicts": conflicts})
+				continue
 			var root: Node = host.scene_root(uri)
 			if not root:
 				error = ERR_FILE_NOT_FOUND
@@ -446,8 +463,10 @@ func get_diagnostics(p: Dictionary) -> Dictionary:
 		if p.has("revision") and p.revision != info.revision: return host.fail("STALE_REVISION", "Diagnostics requested for an old source revision.", {"current_revision": info.revision})
 	var checked: Dictionary = {"sources": []} if uris.is_empty() else await validate_sources(uris)
 	if checked.has("error"): return checked
-	var result: Dictionary = host.logs.read(int(p.get("since", 0)), int(p.get("limit", 200)))
-	if not p.get("kinds", []).is_empty(): result.entries = result.entries.filter(func(item: Dictionary) -> bool: return item.kind in p.kinds)
+	var kinds: Array = p.get("kinds", [])
+	var result: Dictionary = host.logs.read(int(p.get("since", 0)), int(p.get("limit", 200)), kinds)
+	for source: Dictionary in checked.sources:
+		source.entries = LogBuffer.filter_entries(source.entries, kinds)
 	result.sources = checked.sources
 	result.entries_are_history = true
 	result.origin = "editor"

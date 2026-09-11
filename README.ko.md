@@ -51,4 +51,4 @@ Godot에서 프로젝트를 닫고, AI에게 프로젝트의 절대 경로를 �
 
 ## 참고
 
-[44개 도구](docs/tools.md) · [설정 및 문제 해결](docs/installation.md) · [개발](docs/development.md) · [EUPL-1.2](LICENSE)
+[44개 도구](docs/tools.md) · [상태와 복구](docs/workflows.md) · [설정 및 문제 해결](docs/installation.md) · [개발](docs/development.md) · [EUPL-1.2](LICENSE)

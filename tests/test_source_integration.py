@@ -112,3 +112,76 @@ async def test_batch_dependencies_drafts_and_preflight(editor):
         await invoke(client, "edit_script", uri="res://later.gd", if_revision=current["revision"], source=changes[1]["source"])
         _, fresh = await invoke(client, "get_diagnostics", uris=["res://dependent.gd"])
         assert fresh["sources"][0]["valid"] is True, fresh
+
+async def test_property_planner_rejects_incompatible_script_and_retries_attachment(editor):
+    bridge, _ = editor
+    async with Client(create_server(bridge.project, bridge)) as client:
+        await invoke(client, "create_nodes", parent=node(), nodes=[{"name": "Target", "class": "Node"}])
+        response, created = await invoke(
+            client,
+            "create_script",
+            uri="res://repairable.gd",
+            source="extends Node2D\n",
+            attach_to=[node("Target")],
+        )
+        assert response.is_error and created["status"] == "partial"
+        retry = created["attachment_errors"][0]["retry"]
+        assert retry["tool"] == "update_nodes"
+        assert retry["arguments"]["changes"][0]["node"] == node("Target")
+        assert retry["arguments"]["changes"][0]["set"]["script"]["$type"] == "Resource"
+
+        response, rejected = await invoke(client, "update_nodes", **retry["arguments"])
+        assert response.is_error and rejected["error"]["code"] == "INVALID_PROPERTY"
+        _, before = await invoke(client, "get_scene", scene="res://main.tscn", path="Target", properties=["script"])
+        assert before["root"]["properties"]["script"] is None
+
+        _, current = await invoke(client, "read_script", uri="res://repairable.gd")
+        response, repaired = await invoke(
+            client,
+            "edit_script",
+            uri="res://repairable.gd",
+            if_revision=current["revision"],
+            source="extends Node\n",
+        )
+        assert not response.is_error and repaired["diagnostics"]["valid"] is True
+        await invoke(client, "get_diagnostics", uris=["res://repairable.gd"])
+        await invoke(client, "save_documents", uris=["res://repairable.gd"])
+        response, attached = await invoke(client, "update_nodes", **retry["arguments"])
+        assert not response.is_error, attached
+        _, after = await invoke(client, "get_resource", target={"node": node("Target"), "property": "script"}, properties=["source_code"])
+        assert after["uri"] == "res://repairable.gd"
+
+
+async def test_shader_material_attachment_retry_after_source_repair(editor):
+    bridge, _ = editor
+    async with Client(create_server(bridge.project, bridge)) as client:
+        _, material = await invoke(client, "create_resource", **{"class": "ShaderMaterial"})
+        material_uri = material["resource"]["uri"]
+        response, created = await invoke(
+            client,
+            "create_script",
+            uri="res://repairable.gdshader",
+            source="shader_type canvas_item;\nvoid fragment() { COLOR = unknown_symbol; }\n",
+            material={"uri": material_uri},
+        )
+        assert response.is_error and created["saved"] is True
+        assert (bridge.project / "repairable.gdshader").exists()
+        retry = created["attachment_errors"][0]["retry"]
+        assert retry["tool"] == "update_resource"
+        assert retry["arguments"]["scope"] == "shared"
+        assert retry["arguments"]["target"] == {"uri": material_uri}
+        Draft202012Validator(SPECS["update_resource"]["inputSchema"]).validate(retry["arguments"])
+
+        _, current = await invoke(client, "read_script", uri="res://repairable.gdshader")
+        response, repaired = await invoke(
+            client,
+            "edit_script",
+            uri="res://repairable.gdshader",
+            if_revision=current["revision"],
+            source="shader_type canvas_item;\nvoid fragment() { COLOR = vec4(1.0); }\n",
+        )
+        assert not response.is_error and repaired["diagnostics"]["valid"] is True
+        response, attached = await invoke(client, retry["tool"], **retry["arguments"])
+        assert not response.is_error, attached
+        _, material_after = await invoke(client, "get_resource", target={"uri": material_uri}, properties=["shader"])
+        assert material_after["properties"]["shader"]["uri"] == "res://repairable.gdshader"

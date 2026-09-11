@@ -11,9 +11,9 @@ func handles(method: String) -> bool:
 func dispatch(method: String, p: Dictionary) -> Dictionary:
 	match method:
 		"get_resource":
-			var resource: Resource = host.resolve_resource(p.get("target", {}))
-			if not resource: return host.fail("RESOURCE_NOT_FOUND", "Resource reference is stale or does not exist.")
-			return describe(resource, p.get("properties", []), int(p.get("depth", 1)))
+			var target: Dictionary = host.resolve_resource_target(p.get("target", {}))
+			if target.has("error"): return target
+			return describe(target.resource, p.get("properties", []), int(p.get("depth", 1)))
 		"create_resource": return create_resource(p)
 		"update_resource": return update_resource(p)
 	return host.fail("UNKNOWN_TOOL", method)
@@ -95,9 +95,9 @@ func create_resource(p: Dictionary) -> Dictionary:
 	if not ClassDB.can_instantiate(cls) or not ClassDB.is_parent_class(cls, "Resource") or ClassDB.is_parent_class(cls, "Script"):
 		return host.fail("INVALID_CLASS", "Use an instantiable Resource class; use create_script for code.")
 	var resource: Resource = ClassDB.instantiate(cls) as Resource
-	var error: String = host.property_error(resource, p.get("properties", {}))
-	if not error.is_empty(): return host.fail("INVALID_PROPERTY", error)
-	for change: Dictionary in host.property_changes(resource, p.get("properties", {})): resource.set(change.property, change.after)
+	var property_plan: Dictionary = host.plan_property_changes(resource, p.get("properties", {}))
+	if property_plan.has("error"): return property_plan
+	for change: Dictionary in property_plan.get("changes", []): resource.set(change.property, change.after)
 	var uri: String = host.register_resource(resource)
 	var node: Node
 	var property: String
@@ -105,8 +105,8 @@ func create_resource(p: Dictionary) -> Dictionary:
 		node = host.resolve_node(p.assign_to.get("node", {}))
 		property = p.assign_to.get("property", "")
 		if not node: return host.fail("NODE_NOT_FOUND", "Assignment target does not exist.")
-		error = host.property_error(node, {property: {"$type": "Resource", "uri": uri}})
-		if not error.is_empty(): return host.fail("INVALID_PROPERTY", error)
+		var assignment_plan: Dictionary = host.plan_property_changes(node, {property: {"$type": "Resource", "uri": uri}})
+		if assignment_plan.has("error"): return assignment_plan
 	if p.has("save_as"):
 		var saved: Error = save_new(resource, p.save_as)
 		if saved != OK: return host.fail("SAVE_FAILED", error_string(saved))
@@ -118,31 +118,30 @@ func create_resource(p: Dictionary) -> Dictionary:
 	return result
 
 func update_resource(p: Dictionary) -> Dictionary:
-	var target: Dictionary = p.get("target", {})
-	var resource: Resource = host.resolve_resource(target)
-	if not resource: return host.fail("RESOURCE_NOT_FOUND", "Resource does not exist.")
 	var scope: String = p.get("scope", "")
 	if scope not in ["node", "shared"]: return host.fail("SCOPE_REQUIRED", "Choose node or shared scope.")
-	if scope == "node" and not target.has("node"): return host.fail("SCOPE_REQUIRED", "Node-local edits need target.node and target.property.")
+	var target: Dictionary = host.resolve_resource_target(p.get("target", {}), scope)
+	if target.has("error"): return target
+	var resource: Resource = target.resource
 	if scope == "shared" and imported(resource): return host.fail("IMPORTED_RESOURCE", "Detach imported resources with node scope, optionally saving as an authored .tres file.")
-	var error: String = host.property_error(resource, p.get("set", {}))
-	if not error.is_empty(): return host.fail("INVALID_PROPERTY", error)
+	var property_plan: Dictionary = host.plan_property_changes(resource, p.get("set", {}))
+	if property_plan.has("error"): return property_plan
 	var before_users: Dictionary = users(resource)
 	var result: Dictionary
 	if scope == "node":
-		var node: Node = host.resolve_node(target.node)
+		var node: Node = target.node
 		var replacement: Resource = resource.duplicate(true)
 		replacement.resource_local_to_scene = true
-		for change: Dictionary in host.property_changes(replacement, p.get("set", {})): replacement.set(change.property, change.after)
+		for change: Dictionary in property_plan.get("changes", []): replacement.set(change.property, change.after)
 		if p.has("save_as"):
 			var saved: Error = save_new(replacement, p.save_as)
 			if saved != OK: return host.fail("SAVE_FAILED", error_string(saved))
-		result = host.commit_changes([{"object": node, "property": target.property, "before": resource, "after": replacement}], host.scene_root(target.node.scene), "Isolate resource")
+		result = host.commit_changes([{"object": node, "property": target.property, "before": resource, "after": replacement}], host.scene_root(target.scene), "Isolate resource")
 		resource = replacement
-		result.affected = [target]
+		result.affected = [target.reference]
 	else:
 		if p.has("save_as"): return host.fail("INVALID_ARGUMENT", "Use save_documents to save a shared resource under a new path.")
-		result = host.commit_changes(host.property_changes(resource, p.get("set", {})), resource, "Update shared resource")
+		result = host.commit_changes(property_plan.get("changes", []), resource, "Update shared resource")
 		result.affected = before_users
 	result.scope = scope
 	result.resource = host.encode(resource)

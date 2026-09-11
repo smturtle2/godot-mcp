@@ -14,10 +14,13 @@ from godot_mcp.bridge import EditorBridge, ToolError
 
 
 @pytest.fixture
-async def editor(tmp_path):
+async def editor(tmp_path, request):
     project = tmp_path / 'project'
     shutil.copytree(Path(__file__).parent / 'fixtures', project)
     shutil.copytree(Path(__file__).parents[1] / 'src/godot_mcp/addon', project / 'addons/godot_mcp')
+    prepare = getattr(request, 'param', None)
+    if prepare is not None:
+        prepare(project)
     log = (tmp_path / 'editor.log').open('w')
     with socket.socket() as dap, socket.socket() as debug:
         dap.bind(('127.0.0.1', 0))

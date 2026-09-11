@@ -39,6 +39,9 @@ async def test_snapshot_diagnostics_do_not_start_declared_autoload(tmp_path):
         encoding="utf-8",
     )
     shutil.copy2(addon_source / "source_validation.gd", harness / "source_validation.gd")
+    collector = harness / "addons/godot_mcp/process_output.gd"
+    collector.parent.mkdir(parents=True)
+    shutil.copy2(addon_source / "process_output.gd", collector)
     result_file = harness / "result.json"
     (harness / "harness.gd").write_text(
         "extends SceneTree\n"
