@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
@@ -12,14 +11,9 @@ def render() -> str:
     sys.path.insert(0, str(root / "src"))
     from godot_mcp.catalog import TOOL_SPECS
 
-    lines = ["# Godot MCP tool reference", "", "Generated from `godot_mcp.catalog.TOOL_SPECS`; schemas are JSON Schema Draft 2020-12.", "",
-             "| # | Tool | Description |", "|---:|---|---|"]
-    for index, spec in enumerate(TOOL_SPECS, 1):
-        lines.append(f"| {index} | `{spec['name']}` | {spec['description']} |")
-    lines += ["", "## Full input schemas", ""]
-    for index, spec in enumerate(TOOL_SPECS, 1):
-        schema = json.dumps(spec["inputSchema"], ensure_ascii=False, indent=2, sort_keys=True)
-        lines += ["<details>", f"<summary>{index}. <code>{spec['name']}</code></summary>", "", "```json", schema, "```", "", "</details>", ""]
+    lines = ["# Godot MCP tool reference", "", "Generated from [`TOOL_SPECS`](../src/godot_mcp/catalog.py). The canonical JSON input schemas are served by MCP `tools/list`; this page keeps the discoverable catalog compact.", "", "`install_plugin` can install and enable the project plugin before an editor connection exists. After opening the project, use `get_context` for live editor state.", "", "| Tool | Description |", "|---|---|"]
+    for spec in TOOL_SPECS:
+        lines.append(f"| `{spec['name']}` | {spec['description']} |")
     return "\n".join(lines)
 
 

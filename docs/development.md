@@ -1,10 +1,10 @@
 # Development
 
-## Setup and checks
+## Checks
 
-Use the locked environment from the repository root:
+From the repository root:
 
-```bash
+```sh
 uv sync --frozen
 uv run pytest
 uv run ruff check .
@@ -12,47 +12,36 @@ uv run scripts/sync_version.py --check
 uv run scripts/generate_tool_docs.py --check
 ```
 
-The unit and contract suite does not require Godot. Real editor coverage is opt in:
+Real editor tests require the supported Godot version and an X11 display for viewport capture:
 
-```bash
+```sh
 GODOT_MCP_INTEGRATION=1 uv run pytest tests/test_editor_integration.py
+uv run scripts/verify_install.py
 ```
 
-That suite requires a supported local Godot editor and an X11 display for game viewport capture. Linux x86_64 is runtime-tested; native validation on macOS, Windows, and Linux ARM64 remains pending. Treat the suite as representative scope validation.
+The installation check covers initial setup, MCP plugin installation, live editing, stable commands, reinstall reuse, and repair. It uses an isolated installation without changing the user's PATH.
 
-## Setup interfaces
+## Runtime design
 
-The MCP client starts the registered `connect --home HOME` stdio server. The `install_plugin` setup tool accepts an absolute project directory and uses the server’s configured home to run the transactional plugin installer before an editor connection exists. `godot-mcp init [PROJECT] --home HOME` is the CLI equivalent; when `PROJECT` is omitted it uses the current folder. Do not add executable detection or prompts to these flows.
+```text
+MCP client → stdio server → authenticated WebSocket → Godot EditorPlugin
+                    └── install_plugin → project files and plugin activation
+```
 
-## Generated files and releases
+The client owns server startup and shutdown. The Python server validates tool arguments and selects a project; the plugin owns live scenes, unsaved state, editor history, and game operations. `install_plugin` and CLI `init` share the transactional installer and work before an editor connection exists.
 
-`src/godot_mcp/version.py` is the version source. Synchronize addon metadata and tool documentation after changes:
+The stable launcher reads `active.json` to select the server environment. Retain its original runtime environment when maintaining installations. Setup must remain unattended and independent of client configuration files or Godot executable discovery.
 
-```bash
+Save explicitly before running a game. Runtime references expire with their run; debugger references expire on resume. Headless viewport capture and DAP `step_out` are unsupported. Export checks artifact creation, not whether the exported application runs.
+
+## Releases
+
+`src/godot_mcp/version.py` is the version source. After changing versions or tool contracts, regenerate and run the checks above:
+
+```sh
 uv run scripts/sync_version.py
 uv run scripts/generate_tool_docs.py
-uv run scripts/sync_version.py --check
-uv run scripts/generate_tool_docs.py --check
+uv run scripts/build_release.py --output dist/release
 ```
 
-Build the reproducible source archive and manifest with:
-
-```bash
-uv run python scripts/build_release.py --output dist/release
-```
-
-Use `--skip-wheel` when only the source archive is needed. Inspect artifact names, sizes, and SHA-256 values before publishing. The public bootstrap fetches the latest stable release; no Godot executable or engine version is selected by the installer.
-
-Run the clean installation smoke check in a temporary directory:
-
-```bash
-uv run python scripts/verify_install.py
-```
-
-It checks environment setup, global stdio startup, plugin installation through MCP before Godot opens, CLI initialization, project discovery, editor connection, reinstall reuse, and repair. It requires a usable supported Godot runtime, but the installer itself does not locate or prompt for that executable.
-
-## Engine and protocol updates
-
-Review upstream release and API changes before editing integration code. Update `src/godot_mcp/version.py`, adjust dependency constraints in `pyproject.toml` when needed, then run `uv lock` and `uv sync --frozen`. Regenerate addon metadata and tool documentation, run unit and opt-in editor tests, exercise representative setup and editor workflows, and repeat the clean installation check.
-
-Keep debugger limitations explicit: pausing outside a GDScript frame cannot be stepped, and `step_out` is unsupported by the current Godot DAP adapter. The stable launcher selects the active executable. Retain its original environment when maintaining installed versions. Clean-install checks exercise the command through PATH and verify it follows a repaired environment. Use `--no-modify-path` for isolated installer tests, and reconnect MCP after updates.
+Review archive contents and manifest hashes before publishing. Engine or protocol updates also require the integration suite and clean installation check. Update dependencies with `uv lock` when needed. Native validation beyond Linux x86_64 remains pending.
