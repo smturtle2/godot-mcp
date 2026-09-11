@@ -12,7 +12,7 @@ From the repository root:
 
 ```sh
 uv sync --frozen
-uv run pytest
+uv run pytest -m 'not integration'
 uv run ruff check .
 uv run scripts/sync_version.py --check
 uv run scripts/generate_tool_docs.py --check
@@ -27,6 +27,8 @@ uv run scripts/verify_install.py
 
 The installation check covers initial setup, MCP plugin installation, live editing, stable commands, reinstall reuse, and repair. It uses an isolated installation without changing the user's PATH.
 
+Pushes and pull requests run unit tests, lint, and version/document synchronization checks. Full Godot integration and clean installation checks run only when the Verify workflow is started manually. Tag releases build a draft without repeating the main branch checks.
+
 ## Runtime design
 
 ```text
@@ -38,7 +40,7 @@ The client owns server startup and shutdown. The Python server validates tool ar
 
 `source_patch.py` parses context patches and conservatively merges retained read bases with current text. `source_tools.py` prepares a plan from an editor snapshot and submits it with revision and editor-session guards; the bridge remains transport only. `source_store.gd` owns current editor buffers, drafts and retained bases. `documents.gd` owns document access and explicit saves, while `source_operations.gd` coordinates source, persistence, validation, reload and binding phases.
 
-`apply_script_changes`, `resume_script_changes` and `save_documents` use the canonical document result owned by `document_result.gd`. `result_projection.py` selects compact receipt fields, while shared `operation_records.gd` serializes inert operation-time snapshots. `get_operation_result` reports that snapshot plus current Undo eligibility, continuation availability and runtime provenance. Reading or waiting for a result never repeats a mutation. `catalog.py` defines public schemas; named input choices are strict JSON Schema objects with exactly one selected property, and server-side argument validation remains authoritative. A fresh client capture is required to verify how an external model converter renders those nested payload types.
+`apply_script_changes`, `resume_script_changes` and `save_documents` use the canonical document result owned by `document_result.gd`. `result_projection.py` selects compact receipt fields, while shared `operation_records.gd` serializes inert operation-time snapshots. `get_operation_result` reports that snapshot plus current Undo eligibility, continuation availability and runtime provenance. Reading or waiting for a result never repeats a mutation. `catalog.py` defines public schemas; named input choices are strict JSON Schema objects with exactly one selected property, and server-side argument validation remains authoritative.
 
 Keep applied effects with their domain owner and MCP `isError` mapping with the server. A pending operation is still running; a partial or failed mutation reports an error while preserving successful effects. A source verdict is current only when its full validation fingerprint remains unchanged. A saved source file and an applied but unsaved attachment are separate effects and must remain distinguishable.
 
@@ -73,11 +75,7 @@ Property plans decode values once and are consumed by their scene or resource ow
 
 Import continuations wait for importer quiescence and acquire the same mutation gate as requests before changing options or registering undo. The import manager retains only pending executions, capped at 32. Detailed operation receipts are inert shared records capped at 64 records and 16 MiB of serialized result bytes; completed records evict before pending records, oversized completed records expire, oversized pending records remain unavailable until republished, and editor restart loses all records. Operation IDs differ from Undo IDs.
 
-Integration fixtures may instrument the copied plugin to control importer waits, partial writes and native editor buffer changes. Production code does not expose those test commands. Validate both successful results and partial results against their MCP output schemas. Schema tests verify the raw catalog and server boundary; rendering by an external client's schema converter requires a separate client reconnect check.
-
-`scripts/check_model_declarations.py --declarations capture.json --tsc /path/to/tsc` checks actual client metadata against the public input schemas. The checked-in Codex CLI 0.154.0 capture contains all 45 tool declarations with checksums and provenance; 1,605 field, requiredness and type assertions cover every tool. Synthetic weakened copies verify that erased shapes and optionalized required fields are caught. Set `TSC` or put `tsc` on PATH to enable compiler tests. JSON Schema still enforces bounds, path patterns, array lengths and exactly one named choice; those constraints do not survive as TypeScript types.
-
-The capture checks declaration fidelity only. It does not establish that a model will choose these tools, generate successful calls or complete game development through them. Real Godot integration tests check execution separately. See [capture evidence](../tests/fixtures/model_declarations/README.md) for artifacts and limits.
+Integration fixtures may instrument the copied plugin to control importer waits, partial writes and native editor buffer changes. Production code does not expose those test commands. Keep regression checks focused on observable behavior and meaningful failure boundaries. The catalog and server boundary own schema validation; refresh client tool metadata after contract changes.
 
 See [state and recovery](workflows.md) for caller-visible conflict, timeout and retry behavior.
 

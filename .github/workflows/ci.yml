@@ -3,7 +3,6 @@ on:
   push:
     branches: [main]
   pull_request:
-  workflow_call:
   workflow_dispatch:
 permissions:
   contents: read
@@ -18,10 +17,11 @@ jobs:
           enable-cache: true
       - run: uv sync --frozen --python 3.13
       - run: uv run ruff check .
-      - run: uv run pytest -q
+      - run: uv run pytest -q -m 'not integration'
       - run: uv run scripts/sync_version.py --check
       - run: uv run scripts/generate_tool_docs.py --check
       - name: Install matching Godot
+        if: github.event_name == 'workflow_dispatch'
         shell: bash
         run: |
           engine=$(uv run python -c 'from godot_mcp.version import ENGINE_VERSION; print(ENGINE_VERSION)')
@@ -36,8 +36,10 @@ jobs:
           chmod +x godot
           echo "$RUNNER_TEMP/godot" >> "$GITHUB_PATH"
       - name: Editor, game, debugger and export acceptance
+        if: github.event_name == 'workflow_dispatch'
         run: xvfb-run -a env GODOT_MCP_INTEGRATION=1 uv run pytest -q -m integration
       - name: Package and clean installation
+        if: github.event_name == 'workflow_dispatch'
         run: |
           uv run scripts/build_release.py
           uv run scripts/verify_install.py

@@ -5,9 +5,10 @@
 - **Breaking diagnostics contract:** `get_diagnostics` reports current source validity and coverage; `get_logs` separately reads historical editor/runtime entries. Diagnostics run asynchronously and can reuse a bounded cache only when the complete project, unsaved source, live settings and compiler fingerprint still matches. Recheck validation after editor waits and before unfinished bindings.
 - Search current editor buffers and drafts by file name, source content or symbol, with revisions and pagination. Retain read bases within 256 versions and 16 MiB; bound source continuations to 32, diagnostic jobs to 16 and validation cache entries to eight/16 MiB. Pending source, diagnostic and import work appears in `get_context`.
 - **Breaking launch contract:** `run_scene` uses explicit `save_uris`, optional revision guards and `restart`; remaining unsaved state blocks startup. Record startup source files through an editor/game handshake and report current runtime source provenance, changed files and restart requirements. Startup evidence does not prove executed behavior. Settle the previous debugger session before restarting.
-- Keep patch parsing and merging in Python, editor source state in the source store, source continuations and diagnostics with their own owners, and startup manifests shared by the editor and runtime. Refresh all 45 actual model declarations and document the current workflow without legacy source adapters.
+- Keep patch parsing and merging in Python, editor source state in the source store, source continuations and diagnostics with their own owners, and startup manifests shared by the editor and runtime. Document the current workflow without legacy source adapters.
+- Remove the client-specific declaration audit and captured metadata fixtures. Keep automatic checks small; run full Godot and installation checks manually, and avoid repeating main branch checks in the tag release workflow.
 
-Validated with 152 unit tests, 38 real Godot integration cases, 1,605 actual model-declaration assertions, and isolated installation, reinstall, repair and stdio checks on Linux x86_64. Refresh MCP tools after updating. End-to-end game-development usability and model tool-selection behavior have not been verified for this release.
+Refresh MCP tools after updating. Linux x86_64 editor workflows are supported; end-to-end game-development usability and model tool-selection behavior have not been verified for this release.
 
 # v4.7.2_11
 
