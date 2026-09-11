@@ -13,17 +13,18 @@ Generated from [`TOOL_SPECS`](../src/godot_mcp/catalog.py). The canonical JSON i
 | `get_scene` | Inspect live scene nodes, unsaved values, connections, inheritance overrides and actual Control layout. |
 | `open_scene` | Open and activate a saved scene in the editor. |
 | `create_scene` | Create a scene with a typed root or inherited source. Saves the new file and returns its root reference. |
-| `create_nodes` | Create a related subtree, scene instances or duplicates in one undoable edit. Returns actual names and references. |
+| `create_nodes` | Create a flat related-node batch using optional parent_key links, scene instances or duplicates in one undoable edit. Returns actual names and references. |
 | `update_nodes` | Batch node properties, names and reparenting in one scene. Use references in the source scene to edit the original. Container-controlled layout is reported. |
 | `delete_nodes` | Delete related nodes with undo; report affected persistent connections and NodePath references. Reject inherited members and overlapping selections. |
-| `save_documents` | Save only the specified scene, script or resource documents. Returns saved and failed entries separately. |
+| `save_documents` | Save requested documents; Godot scene saves may also persist linked resources. Reports observed extra source saves, partial failures, and the separate undo boundary. |
 | `undo_edit` | Undo the latest MCP edit if its editor history has not changed since. Filesystem operations report their separate rollback scope. |
 | `get_resource` | Read resource properties, nested references, known users and import provenance. Sharing scan covers open scenes and indexed project dependencies. |
 | `create_resource` | Create an in-memory resource, optionally attach it or save it. Returns a reusable resource URI. |
 | `update_resource` | Change a resource with explicit node-local or shared scope. Imported shared sources require detaching to an authored resource. |
-| `read_script` | Read current unsaved GDScript or shader source, content revision and symbol positions. Ranges use one-based Unicode columns and exclusive ends. |
-| `create_script` | Create GDScript or a shader and return compiler diagnostics. GDScript attaches to nodes; shaders attach to ShaderMaterial resources. |
-| `edit_script` | Edit source using an exact revision and non-overlapping one-based ranges. Updates the live document; save explicitly to persist. |
+| `read_script` | Read the current source, including unsaved editor/store changes, with its revision and symbols. Ranges use one-based Unicode columns and exclusive ends. |
+| `create_script` | Create and save the source before validation; compilation or attachment failures leave the file saved and should be retried with edit_script. |
+| `edit_script` | Apply a live source edit at an exact revision; changes remain live even when compilation fails, and game hot reload is not promised. Save explicitly to persist. |
+| `apply_script_changes` | Apply a bounded batch of live source changes; save=true persists the batch afterward. Changes remain live on compile failure, attachments are outside this batch, and game hot reload is not promised. Validation snapshots exclude caches/symlinks and are limited to 512 MiB and 20,000 files. |
 | `update_signals` | Connect/disconnect persistent signal handlers with optional binds in one scene. Missing handler code is reported. |
 | `get_animation` | Inspect animation tracks/keys or AnimationTree states, transitions, blend connections and parameter values. |
 | `edit_animation` | Create or edit an AnimationPlayer animation and typed tracks/keys. Node scope isolates a player's shared library; shared scope is explicit. |
@@ -35,7 +36,7 @@ Generated from [`TOOL_SPECS`](../src/godot_mcp/catalog.py). The canonical JSON i
 | `inspect_runtime` | Read the actual game's scene tree or node properties with run ID and observation time. |
 | `capture_viewport` | Return actual PNG pixels plus viewport/capture coordinates. Headless rendering returns an explicit unsupported error. |
 | `wait_for_condition` | Observe scene/node/property/signal conditions until satisfied or a bounded timeout; returns last observation. |
-| `get_diagnostics` | Read actual compiler/runtime/editor diagnostics with cursor, revision, repeat counts and source positions. |
+| `get_diagnostics` | Read a fresh snapshot validation of requested sources plus historical editor log entries; unsaved dependencies are included. Snapshot validation excludes caches/symlinks and is limited to 512 MiB and 20,000 files. |
 | `sample_performance` | Measure supported Performance monitors over time; include units, sample count and conditions. Unknown metrics are rejected. |
 | `run_scene` | Start an editor-launched game and wait for the actual runtime helper handshake. Save/restart are explicit (default false). |
 | `stop_game` | Stop the specified run, release injected input, and confirm process termination. |

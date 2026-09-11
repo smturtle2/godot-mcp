@@ -2,6 +2,7 @@ import pytest
 
 from godot_mcp import cli
 from godot_mcp.bridge import ToolError
+from godot_mcp.catalog import TOOL_SPECS
 from godot_mcp.version import ENGINE_VERSION, PRODUCT_VERSION, PROTOCOL_VERSION
 
 
@@ -49,7 +50,7 @@ def test_check_reports_catalog_and_connection(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("godot_mcp.bridge.EditorBridge.call", fake_call)
     assert cli.main(["check", "--project", str(tmp_path)]) == 0
     output = capsys.readouterr().out
-    assert "43 tools" in output
+    assert f"{len(TOOL_SPECS)} tools" in output
     assert "Editor connection: OK" in output
 
 

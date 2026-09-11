@@ -14,6 +14,10 @@ import tempfile
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from godot_mcp.catalog import SPECS, TOOL_SPECS
+
 
 def run(command: list[str], *, cwd: Path, env: dict, timeout: float = 30) -> subprocess.CompletedProcess:
     return subprocess.run(command, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout, check=True)
@@ -38,6 +42,9 @@ async def mcp_smoke(executable: Path, project: Path, env: dict[str, str], home: 
             listed = await client.list_tools()
             context_result = await client.call_tool("get_context", {})
             context = context_result.structured_content or {}
+            expected_count = len(TOOL_SPECS)
+            expected_names = set(SPECS)
+            assert len(listed.tools) == expected_count and {tool.name for tool in listed.tools} == expected_names
             if not edit:
                 assert not context_result.is_error
                 assert context.get("server_ready") is True
@@ -52,8 +59,7 @@ async def mcp_smoke(executable: Path, project: Path, env: dict[str, str], home: 
                     "position": {"$type": "Vector2", "x": 12, "y": 34}
                 }}]
             })
-            scene = await client.call_tool("get_scene", {"scene": "res://main.tscn", "path": ".", "depth": 1})
-            assert len(listed.tools) == 43 and len({tool.name for tool in listed.tools}) == 43
+            scene = await client.call_tool("get_scene", {"scene": "res://main.tscn", "path": ".", "depth": 1, "properties": ["position"]})
             assert not context_result.is_error and context.get("version")
             assert context["version"].startswith("v") and context["protocol"]
             assert Path(context["project"]).resolve() == project.resolve()

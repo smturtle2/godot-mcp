@@ -15,7 +15,7 @@ uv run scripts/generate_tool_docs.py --check
 Real editor tests require the supported Godot version and an X11 display for viewport capture:
 
 ```sh
-GODOT_MCP_INTEGRATION=1 uv run pytest tests/test_editor_integration.py
+GODOT_MCP_INTEGRATION=1 uv run pytest -m integration
 uv run scripts/verify_install.py
 ```
 
@@ -29,6 +29,8 @@ MCP client → stdio server → authenticated WebSocket → Godot EditorPlugin
 ```
 
 The client owns server startup and shutdown. The Python server validates tool arguments and selects a project; the plugin owns live scenes, unsaved state, editor history, and game operations. `install_plugin` and CLI `init` share the transactional installer and work before an editor connection exists.
+
+Source state belongs to `source_store.gd`, compiler snapshots to `source_validation.gd`, and edit/save orchestration to `documents.gd`. Single-file and batch edits share the same revision checks, live state, validation, and undo path.
 
 The stable launcher reads `active.json` to select the server environment. Retain its original runtime environment when maintaining installations. Setup must remain unattended and independent of client configuration files or Godot executable discovery.
 

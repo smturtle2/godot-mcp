@@ -92,7 +92,9 @@ def create_server(project: Path | None = None, bridge: EditorBridge | None = Non
                         extract(child)
 
             extract(result)
-            return types.CallToolResult(content=[types.TextContent(type="text", text=json.dumps(result, ensure_ascii=False)), *images], structured_content=result)
+            incomplete = result.get("status") in {"partial", "failed"} or result.get("complete") is False
+            return types.CallToolResult(content=[types.TextContent(type="text", text=json.dumps(result, ensure_ascii=False)), *images],
+                                        structured_content=result, is_error=incomplete)
         except ToolError as exc:
             result = exc.result()
             return types.CallToolResult(content=[types.TextContent(type="text", text=json.dumps(result))],
@@ -100,7 +102,7 @@ def create_server(project: Path | None = None, bridge: EditorBridge | None = Non
 
     return Server("Godot MCP", version=PRODUCT_VERSION, on_list_tools=list_tools,
                   on_call_tool=call_tool, lifespan=lifespan,
-                  instructions="For a project without the plugin, call install_plugin with its absolute path while Godot is closed, then ask the user to open it. Call get_context first for editor work. When several projects are open, select an absolute project path. Use live scene/resource references for editor edits and current run_id for gameplay. Save explicitly before play. After timeout inspect state before retrying a mutation. Tool errors describe recoverable conditions.")
+                  instructions="For a project without the plugin, call install_plugin with its absolute path while Godot is closed, then ask the user to open it. Call get_context first for editor work. When several projects are open, select an absolute project path. Prefer Godot MCP for scene, script, resource, and project-setting changes while the editor is open: direct edits can miss unsaved changes, bypass editor undo, and leave loaded resources stale until reimport/reload, while MCP handles live state and reports revision, diagnostics, save, and undo details where supported. Direct editing remains appropriate when MCP is unsupported or offline; check unsaved state first, then verify reimport/reload and editor diagnostics. Share these editing considerations with delegated agents. Tagged Godot values use $type (vectors, Color, transforms, NodePath, StringName, Resource, or Packed*Array) and named components. Use live scene/resource references for editor edits and current run_id for gameplay. Save explicitly before play. After timeout inspect state before retrying a mutation. Tool errors describe recoverable conditions.")
 
 
 async def serve(project: Path | None = None, *, home: Path | None = None) -> None:

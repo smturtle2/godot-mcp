@@ -36,7 +36,7 @@ jobs:
           chmod +x godot
           echo "$RUNNER_TEMP/godot" >> "$GITHUB_PATH"
       - name: Editor, game, debugger and export acceptance
-        run: xvfb-run -a env GODOT_MCP_INTEGRATION=1 uv run pytest -q tests/test_editor_integration.py
+        run: xvfb-run -a env GODOT_MCP_INTEGRATION=1 uv run pytest -q -m integration
       - name: Package and clean installation
         run: |
           uv run scripts/build_release.py

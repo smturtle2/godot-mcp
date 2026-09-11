@@ -4,59 +4,17 @@ from __future__ import annotations
 import asyncio
 import base64
 import os
-import shutil
-import signal
-import socket
 import subprocess
-from pathlib import Path
 
 import pytest
 from mcp import Client
 
-from godot_mcp.bridge import EditorBridge, ToolError
+from godot_mcp.bridge import ToolError
+from godot_mcp.catalog import TOOL_SPECS
 from godot_mcp.debugger import DebugTools
 from godot_mcp.server import create_server
 
 pytestmark = [pytest.mark.integration, pytest.mark.skipif(os.environ.get('GODOT_MCP_INTEGRATION') != '1', reason='opt-in real editor')]
-
-
-@pytest.fixture
-async def editor(tmp_path):
-    project = tmp_path / 'project'
-    shutil.copytree(Path(__file__).parent / 'fixtures', project)
-    shutil.copytree(Path(__file__).parents[1] / 'src/godot_mcp/addon', project / 'addons/godot_mcp')
-    log = (tmp_path / 'editor.log').open('w')
-    with socket.socket() as dap, socket.socket() as debug:
-        dap.bind(('127.0.0.1', 0))
-        debug.bind(('127.0.0.1', 0))
-        dap_port, debug_port = dap.getsockname()[1], debug.getsockname()[1]
-    process = subprocess.Popen([os.environ.get('GODOT', 'godot'), '--headless', '--editor', '--path', str(project), '--dap-port', str(dap_port), '--debug-server', f'tcp://127.0.0.1:{debug_port}'], stdout=log, stderr=subprocess.STDOUT, start_new_session=os.name == 'posix')
-    bridge = EditorBridge(project)
-    try:
-        for _ in range(300):
-            if process.poll() is not None:
-                pytest.fail((tmp_path / 'editor.log').read_text())
-            try:
-                context = await bridge.call('get_context', {})
-                if context['active_scene']:
-                    break
-            except ToolError:
-                pass
-            await asyncio.sleep(.1)
-        else:
-            pytest.fail((tmp_path / 'editor.log').read_text())
-        yield bridge, tmp_path
-    finally:
-        if os.name == "posix":
-            os.killpg(process.pid, signal.SIGTERM)
-        else:
-            process.terminate()
-        try:
-            process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait()
-        log.close()
 
 
 def ref(path='.', scene='res://main.tscn'):
@@ -77,7 +35,7 @@ async def test_editor_authoring(editor):
     b, tmp = editor
     server = create_server(b.project, b)
     async with Client(server) as client:
-        assert len((await client.list_tools()).tools) == 43
+        assert len((await client.list_tools()).tools) == len(TOOL_SPECS)
         result = await client.call_tool('get_context', {})
         assert not result.is_error
     diagnostics = await call(b, 'get_diagnostics')
@@ -145,7 +103,7 @@ async def test_editor_authoring(editor):
     assert (await call(b, 'read_script', uri='res://behavior.gd'))['unsaved']
     await call(b, 'update_signals', connect=[{'from': ref(), 'signal': 'health_changed', 'to': ref('Sprite'), 'method': 'react'}])
     saved = await call(b, 'save_documents', uris=['res://main.tscn', 'res://behavior.gd'])
-    assert saved['complete']
+    assert saved['complete'], saved
     r = await call(b, 'delete_nodes', nodes=[ref('Sprite')])
     assert r['affected_references']
     await call(b, 'undo_edit', edit_id=r['edit_id'])

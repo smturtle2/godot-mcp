@@ -40,8 +40,8 @@ func run_scene(p: Dictionary) -> Dictionary:
 		if ResourceUID.has_id(uid): scene = ResourceUID.get_id_path(uid)
 	if scene.is_empty() or not FileAccess.file_exists(scene): return host.fail("SCENE_NOT_FOUND", "Choose an existing scene or configure the project main scene.")
 	var unsaved: Array = Array(EditorInterface.get_unsaved_scenes()) + Array(EditorInterface.get_script_editor().get_unsaved_files())
-	for uri: String in host.documents.states:
-		if host.documents.states[uri].dirty and not uri in unsaved: unsaved.append(uri)
+	for uri: String in host.documents.dirty_uris():
+		if not uri in unsaved: unsaved.append(uri)
 	for uri: String in host.dirty_resources():
 		if uri.begins_with("res://") and not uri.contains("::") and not uri in unsaved: unsaved.append(uri)
 	if not unsaved.is_empty():

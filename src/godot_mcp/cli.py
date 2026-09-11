@@ -10,6 +10,7 @@ from pathlib import Path
 from mcp.client.session import ClientSession
 from mcp.shared.memory import create_client_server_memory_streams
 
+from .catalog import SPECS, TOOL_SPECS
 from .server import create_server, serve
 from .version import ENGINE_VERSION, PRODUCT_VERSION, PROTOCOL_VERSION
 
@@ -57,8 +58,10 @@ async def _check(project: Path) -> int:
                 async with ClientSession(*client_streams) as client:
                     await client.initialize()
                     listed = await client.list_tools()
-                    if len(listed.tools) != 43 or len({tool.name for tool in listed.tools}) != 43:
-                        print("Catalog check failed: MCP list_tools did not return 43 unique tools.", file=sys.stderr)
+                    expected_count = len(TOOL_SPECS)
+                    expected_names = set(SPECS)
+                    if len(listed.tools) != expected_count or {tool.name for tool in listed.tools} != expected_names:
+                        print(f"Catalog check failed: MCP list_tools did not return {expected_count} unique tools.", file=sys.stderr)
                         return 1
                     result = await client.call_tool("get_context", {})
                     if result.is_error:
@@ -87,7 +90,7 @@ async def _check(project: Path) -> int:
             or context.get("protocol") != PROTOCOL_VERSION):
         print("Connection check failed: get_context version/project metadata does not match.", file=sys.stderr)
         return 1
-    print("MCP catalog: 43 tools")
+    print(f"MCP catalog: {len(TOOL_SPECS)} tools")
     print("Editor connection: OK (get_context)")
     return 0
 

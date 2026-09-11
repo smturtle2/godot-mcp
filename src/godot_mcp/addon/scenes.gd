@@ -51,8 +51,16 @@ func get_scene(p: Dictionary) -> Dictionary:
 	if path.begins_with("/") or ".." in path.split("/"): return host.fail("INVALID_PATH", "Node path must be relative to the scene root.")
 	var start: Node = root.get_node_or_null(NodePath(path))
 	if not start: return host.fail("NODE_NOT_FOUND", "Node does not exist in this scene.")
-	var budget: Array[int] = [5000]
-	return {"scene": root.scene_file_path, "unsaved": root.scene_file_path in EditorInterface.get_unsaved_scenes(), "inherited_source": inherited_state(root).get_path() if inherited_state(root) else null, "root": describe(start, root, p.get("properties", []), int(p.get("depth", 8)), budget), "truncated": budget[0] <= 0}
+	var include: Array = p.get("include", [])
+	var names: Array = p.get("properties", []) if p.has("properties") else []
+	if p.has("properties") and not include.has("properties"):
+		include = include.duplicate()
+		include.append("properties")
+	var all_editor_properties: bool = include.has("properties") and not p.has("properties")
+	var budget: Array = [5000, false, false]
+	var inherited: SceneState = inherited_state(root)
+	var result: Dictionary = {"scene": root.scene_file_path, "unsaved": root.scene_file_path in EditorInterface.get_unsaved_scenes(), "inherited_source": inherited.get_path() if inherited else null, "root": describe(start, root, names, int(p.get("depth", 8)), budget, include, all_editor_properties), "truncated": bool(budget[1]) or bool(budget[2]), "depth_truncated": bool(budget[1]), "budget_truncated": bool(budget[2])}
+	return result
 
 func inherited_state(root: Node) -> SceneState:
 	# Node's internal inherited state is not exposed to GDScript.
@@ -66,23 +74,37 @@ func inherited_state(root: Node) -> SceneState:
 		if saved: return saved.get_state().get_base_scene_state()
 	return null
 
-func describe(node: Node, root: Node, names: Array, depth: int, budget: Array[int]) -> Dictionary:
+func describe(node: Node, root: Node, names: Array, depth: int, budget: Array, include: Array = ["properties", "overrides", "connections", "layout"], all_editor_properties: bool = false) -> Dictionary:
 	budget[0] -= 1
 	var values: Dictionary = {}
 	var overrides: Dictionary = {}
+	var include_properties: bool = include.has("properties")
+	var include_overrides: bool = include.has("overrides")
 	for prop: Dictionary in node.get_property_list():
 		var name: String = str(prop.name)
-		if (names.is_empty() and int(prop.usage) & PROPERTY_USAGE_EDITOR) or name in names:
-			values[name] = host.encode(node.get(name))
-			if node.property_can_revert(name) and node.get(name) != node.property_get_revert(name):
-				overrides[name] = {"value": values[name], "revert_value": host.encode(node.property_get_revert(name))}
-	var result: Dictionary = {"ref": {"scene": root.scene_file_path, "path": str(root.get_path_to(node))}, "name": str(node.name), "class": node.get_class(), "properties": values, "overrides": overrides, "script": host.encode(node.get_script()), "instance_source": node.scene_file_path if node != root else null, "owner": str(root.get_path_to(node.owner)) if node.owner else null, "connections": connections(node, root), "children": []}
-	if node is Control:
+		var selected: bool = include_properties and ((all_editor_properties and int(prop.usage) & PROPERTY_USAGE_EDITOR) or name in names)
+		var current: Variant = node.get(name)
+		if selected:
+			values[name] = host.encode(current)
+		if include_overrides and node.property_can_revert(name) and current != node.property_get_revert(name):
+			overrides[name] = {"value": host.encode(current), "revert_value": host.encode(node.property_get_revert(name))}
+	var result: Dictionary = {"ref": {"scene": root.scene_file_path, "path": str(root.get_path_to(node))}, "name": str(node.name), "class": node.get_class(), "script": host.encode(node.get_script()), "instance_source": node.scene_file_path if node != root else null, "owner": str(root.get_path_to(node.owner)) if node.owner else null, "children": []}
+	if include_properties:
+		result.properties = values
+	if include_overrides:
+		result.overrides = overrides
+	if include.has("connections"):
+		result.connections = connections(node, root)
+	if include.has("layout") and node is Control:
 		result.layout = {"rect": host.encode(node.get_rect()), "global_rect": host.encode(node.get_global_rect()), "parent_class": node.get_parent().get_class() if node.get_parent() else null, "container_managed": node.get_parent() is Container, "minimum_size": host.encode(node.get_combined_minimum_size()), "anchors": [node.anchor_left, node.anchor_top, node.anchor_right, node.anchor_bottom], "size_flags": {"horizontal": node.size_flags_horizontal, "vertical": node.size_flags_vertical}}
 	if depth > 0:
 		for child: Node in node.get_children():
-			if budget[0] <= 0: break
-			result.children.append(describe(child, root, names, depth - 1, budget))
+			if budget[0] <= 0:
+				if budget.size() > 2: budget[2] = true
+				break
+			result.children.append(describe(child, root, names, depth - 1, budget, include, all_editor_properties))
+	else:
+		if not node.get_children().is_empty() and budget.size() > 1: budget[1] = true
 	return result
 
 func connections(node: Node, root: Node) -> Array:
@@ -179,12 +201,6 @@ func build_node(spec: Dictionary, budget: Array[int]) -> Dictionary:
 		node.free()
 		return host.fail("INVALID_PROPERTY", error)
 	for change: Dictionary in host.property_changes(node, values): node.set(change.property, change.after)
-	for child_spec: Dictionary in spec.get("children", []):
-		var child: Dictionary = build_node(child_spec, budget)
-		if child.has("error"):
-			node.free()
-			return child
-		node.add_child(child.node, true)
 	return {"node": node}
 
 func set_owner(node: Node, root: Node) -> void:
@@ -202,18 +218,55 @@ func create_nodes(p: Dictionary) -> Dictionary:
 	var root: Node = host.scene_root(str(p.parent.scene))
 	if parent != root and parent.owner != root:
 		return host.fail("INHERITED_NODE", "Add structure in the source scene rather than inside an uneditable instance.")
+	var specs: Array = p.get("nodes", [])
+	if specs.is_empty(): return host.fail("EMPTY_EDIT", "Provide nodes to create.")
+	var key_indices: Dictionary = {}
+	for i: int in specs.size():
+		var spec: Dictionary = specs[i]
+		if spec.has("children"):
+			return host.fail("NESTED_CHILDREN_UNSUPPORTED", "Use flat nodes with parent_key; nested children are not supported.")
+		if spec.has("key"):
+			var key: String = str(spec.key)
+			if key.is_empty(): return host.fail("INVALID_KEY", "Node key must be non-empty when provided.")
+			if key_indices.has(key): return host.fail("DUPLICATE_KEY", "Each node key must be unique: %s." % key)
+			key_indices[key] = i
+	for spec: Dictionary in specs:
+		if spec.has("parent_key"):
+			var parent_key: String = str(spec.parent_key)
+			if parent_key.is_empty() or not key_indices.has(parent_key):
+				return host.fail("UNKNOWN_PARENT_KEY", "parent_key must reference a node key in this batch.")
+	var parent_by_key: Dictionary = {}
+	for spec: Dictionary in specs:
+		if spec.has("key") and spec.has("parent_key"):
+			parent_by_key[str(spec.key)] = str(spec.parent_key)
+	for key: String in parent_by_key:
+		var seen: Dictionary = {}
+		var cursor: String = key
+		while parent_by_key.has(cursor):
+			if seen.has(cursor): return host.fail("PARENT_CYCLE", "parent_key relationships must not contain cycles.")
+			seen[cursor] = true
+			cursor = parent_by_key[cursor]
 	var nodes: Array[Node] = []
 	var budget: Array[int] = [1000]
-	for spec: Dictionary in p.get("nodes", []):
+	for spec: Dictionary in specs:
 		var result: Dictionary = build_node(spec, budget)
 		if result.has("error"):
 			for node: Node in nodes: node.free()
 			return result
 		nodes.append(result.node)
-	if nodes.is_empty(): return host.fail("EMPTY_EDIT", "Provide nodes to create.")
+	var keyed_nodes: Dictionary = {}
+	for i: int in specs.size():
+		if specs[i].has("key"): keyed_nodes[str(specs[i].key)] = nodes[i]
+	var top_level: Array[Node] = []
+	for i: int in specs.size():
+		var spec: Dictionary = specs[i]
+		if spec.has("parent_key"):
+			keyed_nodes[str(spec.parent_key)].add_child(nodes[i], true)
+		else:
+			top_level.append(nodes[i])
 	host.begin_edit("Create nodes", root)
 	var undo: EditorUndoRedoManager = host.get_undo_redo()
-	for node: Node in nodes:
+	for node: Node in top_level:
 		undo.add_do_method(self, "add_node", parent, node, root)
 		undo.add_undo_method(parent, "remove_child", node)
 		undo.add_do_reference(node)
@@ -221,7 +274,7 @@ func create_nodes(p: Dictionary) -> Dictionary:
 	await host.get_tree().process_frame
 	result.nodes = []
 	for i: int in nodes.size():
-		result.nodes.append({"key": p.nodes[i].get("key", ""), "ref": host.node_ref(nodes[i])})
+		result.nodes.append({"key": specs[i].get("key", ""), "ref": host.node_ref(nodes[i])})
 	return result
 
 func structural_error(node: Node, root: Node) -> String:

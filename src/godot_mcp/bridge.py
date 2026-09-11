@@ -117,6 +117,8 @@ class EditorBridge:
         # Input duration and condition waiting are sequential, not concurrent.
         event_ms = max((e.get("at_ms", 0) for e in arguments.get("events", [])), default=0)
         seconds = self.timeout
+        if name in {"create_script", "edit_script", "apply_script_changes", "get_diagnostics"}:
+            seconds = max(seconds, 90)
         if event_ms or "timeout_ms" in arguments:
             seconds = max(seconds, (arguments.get("timeout_ms", 0) + event_ms) / 1000 + 10)
         if "duration_ms" in arguments:

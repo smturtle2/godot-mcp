@@ -237,9 +237,7 @@ func write_files(files: Dictionary, renames: Dictionary = {}) -> bool:
 			resource.take_over_path(renames[from])
 			host.resources.erase(from)
 			host.register_resource(resource)
-		if host.documents.states.has(from):
-			host.documents.states[renames[from]] = host.documents.states[from]
-			host.documents.states.erase(from)
+		host.documents.move_state(from, renames[from])
 	EditorInterface.get_resource_filesystem().scan()
 	for uri: String in open_scenes:
 		var target: String = renames.get(uri, uri)

@@ -1,3 +1,12 @@
+# v4.7.2_9
+
+- Preserve canonical script resource identity across creation, attachment, editing, and scene saving.
+- Report source validation, partial completion, persistence, and undo scope explicitly; incomplete operations set MCP `isError` while preserving successful steps.
+- Add `apply_script_changes` for related sources with revision preflight, coherent validation of unsaved dependencies, draft support, and one editor undo operation. Support whole-source `edit_script` replacements.
+- Validate fresh compiler snapshots instead of stale per-file caches; detect invalid shaders and report unavailable/pending checks honestly.
+- Simplify input schemas and tool descriptions. **Contract changes:** `create_nodes` now uses flat `key`/`parent_key` records; `get_scene` defaults to structure and `properties: []` means no properties. Refresh the client's tools after updating.
+- Recommend MCP editing while Godot is open, explaining unsaved-state, undo, and reload concerns without blocking direct editing.
+
 # v4.7.2_8
 
 - Skip NUL when escaping response control characters, avoiding Godot's `String.chr(0)` error on every MCP request.
