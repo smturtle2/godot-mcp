@@ -3,15 +3,21 @@ extends RefCounted
 const ProcessOutput = preload("res://addons/godot_mcp/process_output.gd")
 const FileJournal = preload("res://addons/godot_mcp/file_journal.gd")
 const ImportOperations = preload("res://addons/godot_mcp/import_operations.gd")
+const AssetDependencies = preload("res://addons/godot_mcp/asset_dependencies.gd")
+const AssetDeletions = preload("res://addons/godot_mcp/asset_deletions.gd")
 var host: EditorPlugin
 var imports: RefCounted
+var dependencies: RefCounted
+var deletions: RefCounted
 
 func _init(editor_host: EditorPlugin) -> void:
 	host = editor_host
 	imports = ImportOperations.new(host, self)
+	dependencies = AssetDependencies.new(host)
+	deletions = AssetDeletions.new(host)
 
 func handles(method: String) -> bool:
-	return method in ["get_settings", "update_settings", "get_export_presets", "export_build", "import_assets", "move_assets"]
+	return method in ["get_settings", "update_settings", "get_export_presets", "export_build", "import_assets", "move_assets", "delete_assets", "restore_assets", "purge_deleted_assets"]
 
 func dispatch(method: String, p: Dictionary) -> Dictionary:
 	match method:
@@ -21,6 +27,7 @@ func dispatch(method: String, p: Dictionary) -> Dictionary:
 		"export_build": return await export_build(p)
 		"import_assets": return await import_assets(p)
 		"move_assets": return await move_assets(p)
+		"delete_assets", "restore_assets", "purge_deleted_assets": return deletions.dispatch(method, p)
 	return host.fail("UNKNOWN_TOOL", method)
 
 func input_info(event: InputEvent) -> Dictionary:

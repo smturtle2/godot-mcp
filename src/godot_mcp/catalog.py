@@ -184,13 +184,37 @@ DIAGNOSTICS_OUTPUT = output_schema({"operation_id": S, "status": enum("pending",
 LOGS_OUTPUT = output_schema({"entries": arr(DIAGNOSTIC_ENTRY, 1000), "history": {"const": True}, "current_verdict": {"const": False}, "origin": enum("editor", "runtime"), "run_id": S}, ("entries", "history", "current_verdict", "origin"))
 OP_FAILURE = obj({"phase": S, "code": S, "message": TEXT, "details": {"type": "object", "additionalProperties": True}}, ("phase", "code", "message", "details"))
 OPERATION_RESULT = {"status": enum("completed", "partial", "failed"), "complete": B, "failures": arr(OP_FAILURE, 200), "pending": arr(S, 200)}
+GENERIC_OBJECT = {"type": "object", "additionalProperties": True}
+ASSET_OPERATION = {
+    "type": "object", "properties": {
+        "operation_id": S, "status": enum("pending", "completed", "partial", "failed"), "complete": B,
+        "pending": arr(S, 20000), "failures": arr(OP_FAILURE, 20000), "applied": arr(S, 20000),
+        "remaining": arr(S, 20000), "edit_id": NULLABLE_STRING,
+        "editor_sync": enum("pending", "completed", "not_needed", "failed"),
+        "deletion_id": S, "deletion_ids": arr(S, 20000), "mode": enum("recoverable", "permanent"),
+        "remaining_references": arr(GENERIC_OBJECT, 20000), "undo_state": enum("available", "unavailable"),
+        "recovery": GENERIC_OBJECT,
+    }, "required": ["operation_id", "status", "complete", "pending", "failures", "applied",
+                      "remaining", "edit_id", "editor_sync"], "additionalProperties": True,
+}
+ASSET_PREVIEW = {
+    "type": "object", "properties": {
+        "preview": {"const": True}, "plan_id": S, "tool": S, "can_apply": B,
+        "targets": arr(GENERIC_OBJECT, 20000), "references": arr(GENERIC_OBJECT, 20000),
+        "blockers": arr(GENERIC_OBJECT, 20000), "coverage": GENERIC_OBJECT,
+        "mode": enum("recoverable", "permanent"), "editor_epoch": S,
+    }, "required": ["preview", "plan_id", "tool", "can_apply", "targets", "references", "blockers", "coverage"],
+    "additionalProperties": True,
+}
+ASSET_OUTPUT = {"type": "object", "oneOf": [ASSET_PREVIEW, ASSET_OPERATION, ERROR_RESULT]}
+ASSET_OPERATION_OUTPUT = {"type": "object", "oneOf": [ASSET_OPERATION, ERROR_RESULT]}
 SEND_INPUT_OUTPUT = output_schema({**OPERATION_RESULT, "source_provenance": SOURCE_PROVENANCE, "processed": integer(), "elapsed_ms": SAFE_COUNTER, "held_inputs": SAFE_COUNTER, "condition": {"type": "object", "additionalProperties": True}, "capture": {"type": "object", "additionalProperties": True}, "recovery": TEXT, "run_id": S, "observed_at_usec": SAFE_COUNTER, "frame": SAFE_COUNTER}, ("status", "complete", "failures", "pending", "processed", "elapsed_ms", "held_inputs"))
 IMPORT_ASSETS_OUTPUT = output_schema({**OPERATION_RESULT, "operation_id": S, "phase": enum("writing", "importing", "reimporting", "settling", "completed", "failed"), "saved": B, "files_written": arr(S, 500), "options_changed": arr(S, 500), "changed_paths": arr(S, 1500), "assets": arr(obj({"uri": RES, "imported": B, "resource": {"anyOf": [obj({"$type": {"const": "Resource"}, "uri": S, "class": S}, ("$type", "uri", "class")), {"type": "null"}]}, "preservation": TEXT}, ("uri", "imported", "resource", "preservation")), 500), "edit_id": NULLABLE_STRING, "undo_state": enum("pending", "available", "unavailable", "not_needed"), "undo": UNDO_RESULT}, ("status", "complete", "failures", "pending", "operation_id", "phase", "saved", "files_written", "options_changed", "changed_paths", "assets", "edit_id", "undo_state", "undo"))
 OPERATION_DETAIL_OUTPUT = output_schema({
     "operation_id": S, "tool": S, "editor_epoch": S, "recorded_at_usec": SAFE_COUNTER,
     "snapshot": {"const": True, "description": "Result as recorded at operation time; query live tools for current document state."},
     "pending": B,
-    "result": {"anyOf": [DOCUMENT_SNAPSHOT, IMPORT_ASSETS_OUTPUT, DIAGNOSTICS_OUTPUT]},
+    "result": {"anyOf": [DOCUMENT_SNAPSHOT, IMPORT_ASSETS_OUTPUT, DIAGNOSTICS_OUTPUT, ASSET_OPERATION]},
     "current_runtime": SOURCE_PROVENANCE,
     "current_resume": obj({"available": B, "running": B, "reason": TEXT}, ("available",)),
     "current_undo": obj({"edit_id": NULLABLE_STRING, "available": B, "reason": TEXT}, ("edit_id", "available")),
@@ -260,9 +284,18 @@ def tool(name, description, properties, required=(), *, read=False, destructive=
 
 TOOL_SPECS = [
     tool("install_plugin", "Install and enable the bundled plugin in an existing Godot project before connecting to the editor. Close the project in Godot first. Creates a rollback backup and registers project discovery.", {"project": {**S, "description": "Required absolute path to the directory containing project.godot."}}, ("project",)),
-    tool("get_context", "Read project/engine/product/protocol versions, active scene, selection, unsaved documents, pending operation IDs and actual run state.", {"scope": enum("all", "project", "editor", "runtime")}, read=True),
+    tool("get_context", "Read versions, active scene, selection, unsaved documents, pending operations, run state and durable deletion records for restore or purge.", {"scope": enum("all", "project", "editor", "runtime")}, read=True),
     tool("get_operation_result", "Read retained results without repeating work; wait_ms optionally waits for running work. Snapshots preserve operation-time facts; current_undo/current_resume report live eligibility. The editor retains 64 results/16 MiB per session, evicting completed records first.", {"operation_id": S, "wait_ms": integer(0, 60000)}, ("operation_id",), read=True, output=OPERATION_DETAIL_OUTPUT),
     tool("find_assets", "Search paths, live source text or symbols, including never-saved drafts. Source matches include their read revision. Pagination observes current state; skipped paths and bounds are explicit.", {"query": S, "mode": enum("name", "content", "symbol"), "types": arr(S, 32), "scope": {"type": "string", "pattern": "^res://"}, "limit": integer(1, 1000), "offset": integer(0, 1000000)}, ("query",), read=True),
+    tool("delete_assets", "Preview or delete assets and their companions. Preview locks the selected mode, reference policy and current revisions; a stale plan must be previewed again. allow_broken reports references that will remain broken. permanent deletion is irreversible; recoverable backups survive editor restarts and can be inspected with Undo/get_operation_result.", {"action": choice({
+        "preview": obj({"paths": arr(RES, 200, 1), "mode": {**enum("recoverable", "permanent"), "default": "recoverable"}, "references": {**enum("block", "allow_broken"), "default": "block"}, "include_unsaved": {**arr(RES, 200), "description": "Explicitly authorize removal of targeted unsaved gd/gdshader buffers or drafts."}}, ("paths",)),
+        "apply": obj({"plan_id": S}, ("plan_id",)),
+    }, "Choose exactly one asset deletion action: preview or apply." )}, ("action",), destructive=True, output=ASSET_OUTPUT),
+    tool("purge_deleted_assets", "Preview or permanently purge recoverable asset backups by deletion ID. Preview locks the selected IDs and revisions; a stale plan must be previewed again. Purging invalidates restore for those backups and cannot be undone.", {"action": choice({
+        "preview": obj({"deletion_ids": arr(S, 200, 1)}, ("deletion_ids",)),
+        "apply": obj({"plan_id": S}, ("plan_id",)),
+    }, "Choose exactly one backup purge action: preview or apply.")}, ("action",), destructive=True, output=ASSET_OUTPUT),
+    tool("restore_assets", "Restore a recoverable deletion by deletion ID. Optional paths select a subset of backed up entries and expand folders and companion files. The operation reports editor synchronization and can be followed with Undo/get_operation_result.", {"deletion_id": S, "paths": arr(RES, 200, 1)}, ("deletion_id",), output=ASSET_OPERATION_OUTPUT),
     tool("get_class_info", "Inspect actual engine or project script classes, properties, methods and signals; optionally filter a member.", {"class": S, "member": S}, ("class",), read=True),
     tool("get_scene", "Inspect live scene nodes, unsaved values, connections, inheritance overrides and actual Control layout.", {"scene": RES, "path": NODE_PATH, "properties": {**arr(S), "description": "Property names: omitted means all editor properties when properties is included; [] means none."}, "include": {**arr(enum("properties", "overrides", "connections", "layout"), 4), "description": "Sections to include; omitted means structure only."}, "depth": integer(0, 32)}, read=True),
     tool("open_scene", "Open and activate a saved scene in the editor.", {"scene": RES}, ("scene",), idempotent=True),
@@ -271,7 +304,7 @@ TOOL_SPECS = [
     tool("update_nodes", "Batch node properties, names and reparenting in one scene. Use references in the source scene to edit the original. Container-controlled layout is reported.", {"changes": arr(obj({"node": REF, "set": PROPS, "name": S, "parent": REF, "index": integer(0, 10000), "keep_global_transform": B}, ("node",)), 200, 1)}, ("changes",)),
     tool("delete_nodes", "Delete related nodes with undo; report affected persistent connections and NodePath references. Reject inherited members and overlapping selections.", {"nodes": arr(REF, 200, 1)}, ("nodes",), destructive=True),
     tool("save_documents", "Persist the listed documents. A scene save that could save other edited documents first returns SAVE_SCOPE_REQUIRED with their paths. Saving and source validation are independent; editor Undo does not restore saved disk files.", {"uris": arr({"type": "string", "pattern": "^(res://|godot://resources/).+"}, 200, 1), "save_as": {"type": "object", "additionalProperties": RES}}, ("uris",), idempotent=True, output=DOCUMENT_OUTPUT),
-    tool("undo_edit", "Undo the latest MCP edit if its editor history has not changed since. Filesystem operations report their separate rollback scope.", {"edit_id": S}, ("edit_id",), destructive=True),
+    tool("undo_edit", "Undo the latest MCP edit if its history and state guards still match. Recoverable asset deletion restores stored files and may return an operation_id while the editor scans; permanent deletion and purged recovery have no Undo.", {"edit_id": S}, ("edit_id",), destructive=True),
     tool("get_resource", "Read a resource selected by uri or by node scene/path/property, including nested references, known users and import provenance. Sharing scan covers open scenes and indexed project dependencies.", {"target": RESOURCE, "properties": arr(S), "depth": integer(0, 5)}, ("target",), read=True),
     tool("create_resource", "Create an in-memory resource, optionally attach it or save it. Returns a reusable resource URI.", {"class": S, "properties": PROPS, "assign_to": obj({"node": REF, "property": S}, ("node", "property")), "save_as": RES}, ("class",)),
     tool("update_resource", "Change a resource with an explicit local or shared target. Imported shared sources require detaching to an authored resource.", {"target": SCOPED_TARGET, "set": PROPS, "save_as": RES}, ("target", "set")),
@@ -308,4 +341,4 @@ TOOL_SPECS = [
 # Canonical input contracts and published tool schemas are the same definitions.
 DOCUMENT_TOOLS = {"apply_script_changes", "resume_script_changes", "save_documents"}
 SPECS = {spec["name"]: spec for spec in TOOL_SPECS}
-assert len(SPECS) == len(TOOL_SPECS) == 45
+assert len(SPECS) == len(TOOL_SPECS) == 48

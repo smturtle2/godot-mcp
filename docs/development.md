@@ -64,6 +64,9 @@ The shared mutation boundaries have explicit owners:
 | Launch save/revision preflight and runtime handshake | `runtime_tools.gd` |
 | Bounded stdout/stderr byte collection and UTF-8 decoding | `process_output.gd` |
 | Pending import execution phases and timeout continuation | `import_operations.gd` |
+| Asset deletion planning, guarded removal, restore and purge operations | `asset_deletions.gd` |
+| Durable deletion manifests and recovery copies | `asset_recovery.gd` |
+| Project dependency and reference discovery for asset plans | `asset_dependencies.gd` |
 | Bounded detailed operation receipts | `operation_records.gd` |
 | Compact result projection | `result_projection.py` |
 | File before/after images and content guards | `file_journal.gd` |
@@ -74,6 +77,8 @@ The shared mutation boundaries have explicit owners:
 Property plans decode values once and are consumed by their scene or resource owner. Source validation runs outside the editor mutation gate; source and dependency guards are checked again after waiting for the gate and before unfinished bindings. Resuming revalidates the repaired source state without replaying the patch or successful bindings. Read bases retain at most 256 versions and 16 MiB. Source continuations retain at most 32 running or blocked bundles, evicting blocked continuations when space is needed; diagnostic jobs are capped at 16. The validation cache retains at most eight entries and 16 MiB, keyed by the project files, unsaved overlays, live settings, requested sources and compiler executable. Cache reuse requires the full fingerprint to remain current.
 
 Import continuations wait for importer quiescence and acquire the same mutation gate as requests before changing options or registering undo. The import manager retains only pending executions, capped at 32. Detailed operation receipts are inert shared records capped at 64 records and 16 MiB of serialized result bytes; completed records evict before pending records, oversized completed records expire, oversized pending records remain unavailable until republished, and editor restart loses all records. Operation IDs differ from Undo IDs.
+
+Asset plans are session-held (up to 32 plans); apply requires the original plan and rechecks revisions, folders, references, and editor state. Deletion IDs and their manifests/bytes are durable under `.godot-mcp/deletions`; operation receipts and editor Undo remain session-scoped. Recovery and purge therefore remain discoverable across editor restarts while a particular operation receipt or Undo action does not.
 
 Integration fixtures may instrument the copied plugin to control importer waits, partial writes and native editor buffer changes. Production code does not expose those test commands. Keep regression checks focused on observable behavior and meaningful failure boundaries. The catalog and server boundary own schema validation; refresh client tool metadata after contract changes.
 

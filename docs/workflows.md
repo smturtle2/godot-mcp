@@ -103,6 +103,38 @@ Node creation sources are exactly one of `class`, `instance`, or `duplicate`. Ti
 
 `get_operation_result` returns the retained operation-time snapshot and separate current Undo, continuation and runtime state. Results are retained up to 64 records and 16 MiB per editor session, evicting completed records first; missing or expired records return explicit errors. Source continuations are bounded separately to 32 running or blocked bundles, and blocked continuations may expire before their receipt. Read bases retain up to 256 versions and 16 MiB. Editor restart clears this session state.
 
+## Asset deletion and recovery
+
+`delete_assets` is a preview/apply workflow. Preview the exact paths, then apply the returned `plan_id`:
+
+```json
+{"action":{"preview":{"paths":["res://old.tres"],"mode":"recoverable","references":"block","include_unsaved":[]}}}
+```
+
+`mode` defaults to `recoverable`; `references` defaults to `block`. Use `mode:"permanent"` only when you explicitly want deletion with no Undo or recovery copy. `include_unsaved` must explicitly name targeted `.gd` or `.gdshader` buffers or drafts. The preview reports `can_apply` and `blockers`; revision, folder, or reference changes after preview return `STALE_PLAN`, so create a fresh preview.
+
+```json
+{"action":{"apply":{"plan_id":"asset-plan-<editor-epoch>-<id>"}}}
+```
+
+Recoverable deletion moves files, UID files, and import sidecars into the project-local `.godot-mcp/deletions` directory and preserves targeted unsaved drafts. Project/configuration, cache, and plugin paths are protected. Deletion results report per-path `applied`, `remaining`, and `failures`; `editor_sync` is a separate filesystem scan state. A `pending` result supplies an `operation_id`; use `get_operation_result` with optional `wait_ms` to follow it. Optimistic guards detect changes but are not a cross-process filesystem lock, and partial effects remain possible.
+
+Restore with the durable `deletion_id`; `paths` is optional and selects entries (including folders and companion files). Collisions are refused without overwriting. Persistent IDs are discoverable in `get_context.recoverable_deletions`, including restored records that can still be purged. Sources removed with `include_unsaved` return as unsaved buffers or drafts. `undo_edit(edit_id)` uses the same guarded restoration while the deletion is the latest eligible editor action; use `restore_assets` after an editor restart.
+
+```json
+{"deletion_id":"deletion-<hex-32>","paths":["res://old.tres"]}
+```
+
+`purge_deleted_assets` previews backup-only `deletion_ids` and applies its `plan_id`. Purging is irreversible, invalidates Undo, and removes recovery data. Permanent deletions have no recovery copy.
+
+```json
+{"action":{"preview":{"deletion_ids":["deletion-<hex-32>"]}}}
+```
+
+Apply this purge plan with the same `action.apply.plan_id` shape shown above. Partial purges identify removed and retained backup entries; they never alter live project assets.
+
+Reference discovery covers known resource dependencies, quoted path literals in current buffers and authored text, open scene properties, known cached resources, and project settings. Dynamically assembled paths, external or hidden references, symlinks, and references outside the project are not guaranteed. `references:"allow_broken"` reports `remaining_references`; it does not rewrite references automatically. Unsaved affected scenes/resources or unsaved reference owners block deletion; `include_unsaved` only authorizes explicitly targeted `.gd`/`.gdshader` sources.
+
 ## Diagnostics and runtime provenance
 
 `get_diagnostics` validates current sources, unsaved source dependencies, and live settings. It is separate from historical logs. It may return an `operation_id` when work exceeds `wait_ms`; use `get_operation_result` to wait without repeating validation. Its bounded fingerprint cache may report `cache="compiled"` or `cache="reused"`. Counts are complete only when all requested coverage is fresh; pending or unavailable sources do not establish an error-free result. Snapshots exclude dot caches and symlinks and are bounded to 20,000 files and 512 MiB.

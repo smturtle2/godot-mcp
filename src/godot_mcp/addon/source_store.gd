@@ -291,6 +291,14 @@ func move_state(from: String, to: String) -> void:
 		states[to] = states[from]
 		states.erase(from)
 
+func remove_state(uri: String) -> void:
+	_forget_buffer(uri)
+	states.erase(uri)
+	for key: String in bases.keys():
+		if key.begins_with(uri + "\n"):
+			base_bytes -= int(bases[key].bytes)
+			bases.erase(key)
+
 func dirty_uris() -> Array[String]:
 	var result: Array[String] = []
 	for uri: String in overlays(): result.append(uri)

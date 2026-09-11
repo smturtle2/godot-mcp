@@ -61,7 +61,7 @@ func users(resource: Resource) -> Dictionary:
 			for i: int in dir.get_file_count():
 				count += 1
 				for dep: String in ResourceLoader.get_dependencies(dir.get_file_path(i)):
-					if dep == path or dep.ends_with("::" + path):
+					if host.assets.dependencies.resolve(dep) == path:
 						dependencies.append(dir.get_file_path(i))
 						break
 	return {"open_scene_users": open_users, "indexed_dependencies": dependencies, "scope": "open scene object identity and indexed serialized dependencies; dynamic code references are not enumerable"}

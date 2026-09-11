@@ -9,9 +9,12 @@ Document and import mutations return a compact receipt with an `operation_id`. U
 | Tool | Description |
 |---|---|
 | `install_plugin` | Install and enable the bundled plugin in an existing Godot project before connecting to the editor. Close the project in Godot first. Creates a rollback backup and registers project discovery. |
-| `get_context` | Read project/engine/product/protocol versions, active scene, selection, unsaved documents, pending operation IDs and actual run state. |
+| `get_context` | Read versions, active scene, selection, unsaved documents, pending operations, run state and durable deletion records for restore or purge. |
 | `get_operation_result` | Read retained results without repeating work; wait_ms optionally waits for running work. Snapshots preserve operation-time facts; current_undo/current_resume report live eligibility. The editor retains 64 results/16 MiB per session, evicting completed records first. |
 | `find_assets` | Search paths, live source text or symbols, including never-saved drafts. Source matches include their read revision. Pagination observes current state; skipped paths and bounds are explicit. |
+| `delete_assets` | Preview or delete assets and their companions. Preview locks the selected mode, reference policy and current revisions; a stale plan must be previewed again. allow_broken reports references that will remain broken. permanent deletion is irreversible; recoverable backups survive editor restarts and can be inspected with Undo/get_operation_result. |
+| `purge_deleted_assets` | Preview or permanently purge recoverable asset backups by deletion ID. Preview locks the selected IDs and revisions; a stale plan must be previewed again. Purging invalidates restore for those backups and cannot be undone. |
+| `restore_assets` | Restore a recoverable deletion by deletion ID. Optional paths select a subset of backed up entries and expand folders and companion files. The operation reports editor synchronization and can be followed with Undo/get_operation_result. |
 | `get_class_info` | Inspect actual engine or project script classes, properties, methods and signals; optionally filter a member. |
 | `get_scene` | Inspect live scene nodes, unsaved values, connections, inheritance overrides and actual Control layout. |
 | `open_scene` | Open and activate a saved scene in the editor. |
@@ -20,7 +23,7 @@ Document and import mutations return a compact receipt with an `operation_id`. U
 | `update_nodes` | Batch node properties, names and reparenting in one scene. Use references in the source scene to edit the original. Container-controlled layout is reported. |
 | `delete_nodes` | Delete related nodes with undo; report affected persistent connections and NodePath references. Reject inherited members and overlapping selections. |
 | `save_documents` | Persist the listed documents. A scene save that could save other edited documents first returns SAVE_SCOPE_REQUIRED with their paths. Saving and source validation are independent; editor Undo does not restore saved disk files. |
-| `undo_edit` | Undo the latest MCP edit if its editor history has not changed since. Filesystem operations report their separate rollback scope. |
+| `undo_edit` | Undo the latest MCP edit if its history and state guards still match. Recoverable asset deletion restores stored files and may return an operation_id while the editor scans; permanent deletion and purged recovery have no Undo. |
 | `get_resource` | Read a resource selected by uri or by node scene/path/property, including nested references, known users and import provenance. Sharing scan covers open scenes and indexed project dependencies. |
 | `create_resource` | Create an in-memory resource, optionally attach it or save it. Returns a reusable resource URI. |
 | `update_resource` | Change a resource with an explicit local or shared target. Imported shared sources require detaching to an authored resource. |

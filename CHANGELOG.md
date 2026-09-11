@@ -1,3 +1,12 @@
+# v4.7.2_13
+
+- Add `delete_assets` with a required preview/apply plan for files and folders. Plans include UID/import sidecars, current source revisions, affected editor state, and remaining references. Changed targets or references invalidate the plan; explicit `include_unsaved` and `references: "allow_broken"` keep destructive choices visible.
+- Default to recoverable deletion with project-local durable records. `restore_assets` and editor Undo restore files, sidecars, and unsaved source without knowingly replacing current files or UID owners. Recovery IDs remain discoverable through `get_context` after an editor restart.
+- Support direct permanent deletion and `purge_deleted_assets` for permanently removing selected recovery records. Permanent mode has no recovery copy or Undo; purging invalidates the associated Undo and leaves live project assets alone.
+- Report actual applied and remaining entries on partial failure, with filesystem effects separate from editor scan completion. Pending scans use the existing `get_operation_result` workflow. Resource inspection and deletion now share UID dependency resolution.
+
+Verified the deletion/recovery lifecycle, partial failure reporting, and recovery across an editor restart in Godot 4.7.2 on Linux. Reference coverage remains explicit: dynamically assembled and out-of-project paths cannot be exhaustively discovered. The reduced CI workflow remains unchanged.
+
 # v4.7.2_12
 
 - **Breaking source contract:** replace `read_script`, `create_script` and `edit_script` with batch `read_scripts` and one `apply_script_changes` context patch. Add and Update share exact context matching, revision guards, retained read bases and conservative three-way merging. Conflicts preserve concurrent editor changes; preview returns the guarded plan without applying it. New sources remain unsaved drafts by default.

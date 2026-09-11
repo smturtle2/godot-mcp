@@ -51,6 +51,8 @@ You can also run `godot-mcp init` from the project folder. For updates, close li
 
 Source editing follows the current Godot editor buffers: read related files with `read_scripts`, then submit one context patch with `apply_script_changes`. Changes stay unsaved by default and use editor Undo. Current diagnostics and resumable source operations support repairing failures without repeating completed work. See the [source workflow](docs/workflows.md#source-workflow).
 
+Preview and delete files or folders through MCP, recover them with Undo or `restore_assets`, or explicitly choose permanent deletion.
+
 ## Reference
 
-[45 tools](docs/tools.md) · [State and recovery](docs/workflows.md) · [Setup and troubleshooting](docs/installation.md) · [Development](docs/development.md) · [EUPL-1.2](LICENSE)
+[48 tools](docs/tools.md) · [State and recovery](docs/workflows.md) · [Setup and troubleshooting](docs/installation.md) · [Development](docs/development.md) · [EUPL-1.2](LICENSE)

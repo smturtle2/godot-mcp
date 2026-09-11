@@ -103,7 +103,9 @@ func _exit_tree() -> void:
 		documents.diagnostics.shutdown()
 		documents.validator.shutdown()
 		documents.store.shutdown()
-	if assets: assets.imports.shutdown()
+	if assets:
+		assets.imports.shutdown()
+		assets.deletions.shutdown()
 	for item: Dictionary in peers:
 		item.peer.close()
 	peers.clear()
@@ -253,6 +255,9 @@ func operation_result(id: String) -> Dictionary:
 		value.current_runtime = runtime.source_state(uris)
 		value.undo_steps = []
 		for step: Dictionary in value.result.get("undo", {}).get("steps", []): value.undo_steps.append(undo_availability(step.edit_id))
+	if not value.has("error") and value.result.has("deletion_id"):
+		var record: Dictionary = assets.deletions.recovery.read_record(value.result.deletion_id)
+		value.current_recovery = record if record.has("error") else assets.deletions.recovery.summary(record)
 	return value
 
 func fail(code: String, message: String, details: Dictionary = {}) -> Dictionary:
@@ -268,8 +273,12 @@ func context(p: Dictionary) -> Dictionary:
 	data.pending_operations = assets.imports.pending()
 	data.pending_operations.append_array(documents.operations.pending())
 	data.pending_operations.append_array(documents.diagnostics.pending())
+	data.pending_operations.append_array(assets.deletions.pending())
+	var filesystem := EditorInterface.get_resource_filesystem()
+	data.filesystem = {"scanning": filesystem.is_scanning(), "importing": filesystem.is_importing()}
+	data.recoverable_deletions = assets.deletions.recovery.list_records()
 	if scope == "project":
-		return {"project": data.project, "engine": data.engine, "version": data.version, "protocol": data.protocol}
+		return {"project": data.project, "engine": data.engine, "version": data.version, "protocol": data.protocol, "recoverable_deletions": data.recoverable_deletions}
 	if scope == "runtime":
 		return {"running": data.running, "run_id": data.run_id, "runtime_connected": data.runtime_connected, "debugger": data.debugger}
 	return data
@@ -430,6 +439,10 @@ func undo_edit(p: Dictionary) -> Dictionary:
 	# undoing this action. Never retag across an intervening user edit.
 	if not edits.is_empty() and edit.get("parent_edit_id") == edits.back().edit_id and edits.back().history_id == edit.history_id:
 		edits.back().history_version = history.get_version()
+	if edit.has("undo_result"):
+		var result: Dictionary = edit.undo_result.call()
+		result.undo_of = edit.edit_id
+		return result
 	return {"undone": edit.edit_id, "label": edit.label, "saved": false}
 
 func undo_availability(edit_id: Variant) -> Dictionary:
