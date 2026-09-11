@@ -398,7 +398,7 @@ func can_undo(id: String) -> bool:
 	if not _idle_error().is_empty(): return false
 	var record: Dictionary = recovery.read_record(id)
 	if record.has("error"): return false
-	if record.state == "purging": return false
+	if record.get("undo_invalidated", false): return false
 	var entries: Array = _restore_selection(record, [])
 	return not entries.is_empty() and _restore_conflicts(record, entries).is_empty()
 
@@ -431,6 +431,7 @@ func redo_delete(id: String) -> void:
 		return
 	var record: Dictionary = recovery.read_record(id)
 	if record.has("error"): return
+	if record.get("undo_invalidated", false): return
 	# Reuse the durable record, but do not register a second native action during redo.
 	var result: Dictionary = _delete(plan, record)
 	if result.has("error"): push_warning(result.error.message)
@@ -484,7 +485,7 @@ func _monitor(id: String) -> void:
 					job.recreated.append(entry.uri)
 					if entry.uri not in job.remaining: job.remaining.append(entry.uri)
 					_failure(job, "PATH_RECREATED", "The path was removed, then recreated while the editor was scanning.", entry.uri)
-		if not record.has("error") and job.action == "restore_assets" and record.state == "restored":
+		if not record.has("error") and job.action == "restore_assets" and record.state == "restored" and not record.get("undo_invalidated", false):
 			var options: Dictionary = {"paths": record.roots, "mode": "recoverable", "references": "allow_broken", "include_unsaved": []}
 			for uri: String in host.documents.store.dirty_uris():
 				if _inside(uri, record.roots): options.include_unsaved.append(uri)
@@ -528,6 +529,7 @@ func _purge(plan: Dictionary) -> Dictionary:
 			continue
 		var failed: bool = false
 		record.state = "purging"
+		record.undo_invalidated = true
 		if recovery.save(record) != OK:
 			job.remaining.append(id)
 			_failure(job, "RECOVERY_RECORD_FAILED", "Cannot invalidate Undo before purging recovery data.", id)
