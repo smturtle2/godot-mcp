@@ -5,6 +5,8 @@ var run_id: String = ""
 var ready: bool = false
 var runtime_info: Dictionary = {}
 var starting: bool = false
+const EditorCaptures = preload("res://addons/godot_mcp/editor_captures.gd")
+var editor_captures: RefCounted
 const SourceManifest = preload("res://addons/godot_mcp/source_manifest.gd")
 var expected_sources: Dictionary = {}
 var startup_sources: Dictionary = {}
@@ -14,6 +16,7 @@ var launch_changed_uris: Array = []
 
 func _init(editor_host: EditorPlugin) -> void:
 	host = editor_host
+	editor_captures = EditorCaptures.new(host)
 
 func handles(method: String) -> bool:
 	return method in ["run_scene", "stop_game", "inspect_runtime", "capture_viewport", "wait_for_condition", "sample_performance", "send_input"]
@@ -35,7 +38,7 @@ func on_ready(info: Dictionary) -> bool:
 	ready = true
 	return true
 
-func source_state(uris: Array = []) -> Dictionary:
+func source_state(uris: Array = [], observed: Dictionary = {}) -> Dictionary:
 	var result: Dictionary = {"run_id": run_id, "running": EditorInterface.is_playing_scene(), "state": "unverified", "startup_files": startup_state, "behavior": "unverified", "scope": SourceManifest.SCOPE}
 	if not result.running:
 		result.state = "not_running"
@@ -48,14 +51,16 @@ func source_state(uris: Array = []) -> Dictionary:
 	var original: Dictionary = startup_sources.files
 	var complete: bool = startup_sources.complete
 	if uris.is_empty():
-		var captured: Dictionary = SourceManifest.capture()
+		var captured: Dictionary = SourceManifest.capture(startup_sources.files.keys(), false)
 		current = captured.files
 		complete = complete and captured.complete
 		var overlays: Dictionary = host.documents.store.overlays()
-		for uri: String in overlays: current[uri] = str(overlays[uri]).sha256_text()
+		for uri: String in overlays:
+			if original.has(uri): current[uri] = str(overlays[uri]).sha256_text()
 	else:
 		original = {}
 		for uri: String in uris:
+			if not startup_sources.files.has(uri): continue
 			original[uri] = startup_sources.files.get(uri)
 			var info: Dictionary = host.documents.source_info(uri)
 			current[uri] = info.get("revision")
@@ -63,14 +68,29 @@ func source_state(uris: Array = []) -> Dictionary:
 	var changed: Array = SourceManifest.differences(original, current)
 	if uris.is_empty():
 		for uri: String in EditorInterface.get_unsaved_scenes():
-			if uri not in changed: changed.append(uri)
+			if original.has(uri) and uri not in changed: changed.append(uri)
 		var settings: Dictionary = host.assets.settings_snapshot()
 		if settings.has("error"): complete = false
 		elif not settings.saved and "res://project.godot" not in changed: changed.append("res://project.godot")
+	var unclassified: Array = []
+	for uri: String in uris:
+		if not startup_sources.files.has(uri): unclassified.append(uri)
+	result.unclassified_uris = unclassified
 	result.changed_uris = changed
 	result.state = "source_changed" if not changed.is_empty() else "matches_startup" if complete and startup_state == "matched" else "unverified"
-	result.restart_required = not changed.is_empty()
-	result.evidence = "Startup file hashes identify observed files, not which scripts executed. Runtime observations cover only the requested properties, input or conditions."
+	result.restart_required = null if not changed.is_empty() or not unclassified.is_empty() or not complete else false
+	result.runtime_impact = "unknown" if not changed.is_empty() or not unclassified.is_empty() else "not_observed"
+	result.runtime_script_changes = []
+	for uri: String in observed.get("scripts", {}):
+		if not uris.is_empty() and uri not in uris: continue
+		var info: Dictionary = host.documents.source_info(uri)
+		if not info.has("error") and not info.get("external_change", false) and info.revision != observed.scripts[uri]:
+			result.runtime_script_changes.append(uri)
+	if not result.runtime_script_changes.is_empty():
+		result.restart_required = true
+		result.runtime_impact = "confirmed"
+	result.observed_runtime = not observed.is_empty()
+	result.evidence = "Only differing, freshly observed runtime script text confirms a restart need; unobserved resource and dynamic-load effects remain unknown."
 	return result
 
 func dispatch(method: String, p: Dictionary) -> Dictionary:
@@ -87,7 +107,7 @@ func dispatch(method: String, p: Dictionary) -> Dictionary:
 			if condition.has("signal") and condition.signal.get("node", {}).get("run_id", "") != run_id: return host.fail("STALE_RUN", "The condition refers to another run.")
 	var result: Dictionary = await host.debugger.request(method, p)
 	result.run_id = run_id
-	result.source_provenance = source_state()
+	if result.get("capture") is Dictionary and result.capture.has("uri"): result.capture.run_id = run_id
 	return result
 
 func _guard_revisions(revisions: Dictionary) -> Dictionary:
@@ -138,27 +158,27 @@ func run_scene(p: Dictionary) -> Dictionary:
 	if pending.has("error"): return pending
 	if not pending.uris.is_empty(): return host.fail("UNSAVED_DOCUMENTS", "Documents changed while preparing the run; read and save them explicitly before retrying.", pending)
 	run_id = "run-" + host.epoch + "-" + str(Time.get_ticks_usec())
-	expected_sources = SourceManifest.capture()
+	expected_sources = SourceManifest.capture(SourceManifest.run_roots(scene))
 	startup_sources = {}
 	startup_state = "unverified"
 	startup_token = Crypto.new().generate_random_bytes(16).hex_encode()
 	var request := FileAccess.open(SourceManifest.REQUEST, FileAccess.WRITE)
 	if not request: return host.fail("RUN_FAILED", "Cannot write the runtime source provenance request.")
-	request.store_string(JSON.stringify({"run_id": run_id, "token": startup_token}))
+	request.store_string(JSON.stringify({"run_id": run_id, "token": startup_token, "paths": expected_sources.files.keys()}))
 	request.close()
 	ready = false
 	starting = true
 	EditorInterface.play_custom_scene(scene)
 	# Native play preparation may normalize the current scene on disk even
 	# when it was clean. Record those writes, then identify the launched files.
-	var launched: Dictionary = SourceManifest.capture()
+	var launched: Dictionary = SourceManifest.capture(SourceManifest.run_roots(scene))
 	launch_changed_uris = SourceManifest.differences(expected_sources.files, launched.files)
 	expected_sources = launched
 	var deadline: int = Time.get_ticks_msec() + 15000
 	while not ready and Time.get_ticks_msec() < deadline: await host.get_tree().process_frame
 	starting = false
 	DirAccess.remove_absolute(SourceManifest.REQUEST)
-	if not ready: return host.fail("RUN_FAILED", "No runtime handshake arrived. Inspect editor diagnostics.", {"run_id": run_id, "playing": EditorInterface.is_playing_scene()})
+	if not ready: return host.fail("RUN_FAILED", "No runtime handshake arrived. Read get_logs for editor errors.", {"run_id": run_id, "playing": EditorInterface.is_playing_scene(), "recovery": {"tool": "get_logs", "arguments": {"kinds": ["error", "warning"]}}})
 	return {"run_id": run_id, "scene": scene, "running": EditorInterface.is_playing_scene(), "runtime_connected": ready, "runtime": runtime_info, "source_provenance": source_state()}
 
 func stop_game(p: Dictionary) -> Dictionary:
@@ -178,18 +198,10 @@ func stop_game(p: Dictionary) -> Dictionary:
 	return {"run_id": run_id, "stopped": stopped, "input_released": stopped}
 
 func editor_capture(p: Dictionary) -> Dictionary:
-	if DisplayServer.get_name() == "headless": return host.fail("RENDERER_UNAVAILABLE", "Use a rendered editor session for viewport capture.")
-	var kind: String = p.get("viewport", {}).get("kind", "editor_2d")
-	var viewport: SubViewport = EditorInterface.get_editor_viewport_3d(int(p.get("viewport", {}).get("index", 0))) if kind == "editor_3d" else EditorInterface.get_editor_viewport_2d()
-	await RenderingServer.frame_post_draw
-	var image: Image = viewport.get_texture().get_image()
-	if not image or image.is_empty(): return host.fail("CAPTURE_FAILED", "Viewport returned no image.")
-	var original: Vector2i = image.get_size()
-	var rect := Rect2i(Vector2i.ZERO, original)
-	if p.has("rect"):
-		rect = Rect2i(Vector2i(host.Codec.v2(p.rect.origin)), Vector2i(host.Codec.v2(p.rect.size))).intersection(rect)
-		if not rect.has_area(): return host.fail("INVALID_RECT", "Crop rectangle is outside the viewport.")
-		image = image.get_region(rect)
-	var scale: float = minf(1.0, minf(float(p.get("max_width", 1280)) / image.get_width(), float(p.get("max_height", 1280)) / image.get_height()))
-	if scale < 1: image.resize(maxi(1, int(image.get_width() * scale)), maxi(1, int(image.get_height() * scale)))
-	return {"image_base64": Marshalls.raw_to_base64(image.save_png_to_buffer()), "width": image.get_width(), "height": image.get_height(), "viewport_size": host.encode(original), "crop": host.encode(rect), "kind": kind, "frame": Engine.get_process_frames()}
+	return await editor_captures.capture(p)
+
+func details() -> Dictionary:
+	var observed: Dictionary = await host.debugger.request("_source_state", {}) if ready else {}
+	var result: Dictionary = source_state([], observed if not observed.has("error") else {})
+	if observed.has("error"): result.observation_error = observed.error
+	return result

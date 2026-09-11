@@ -170,8 +170,6 @@ func dispatch(method: String, p: Dictionary) -> Dictionary:
 	var selected: Dictionary = host.select_case(p.get("action", {}), ["preview", "apply"], "action")
 	if selected.has("error"): return selected
 	if selected.kind == "apply": return _apply(method, str(selected.value.get("plan_id", "")))
-	var idle: Dictionary = _idle_error()
-	if not idle.is_empty(): return idle
 	if method == "purge_deleted_assets": return _purge_preview(selected.value)
 	var options: Dictionary = {"paths": selected.value.get("paths", []), "mode": selected.value.get("mode", "recoverable"), "references": selected.value.get("references", "block"), "include_unsaved": selected.value.get("include_unsaved", [])}
 	if options.paths.is_empty() or options.paths.size() > 200 or options.mode not in ["recoverable", "permanent"] or options.references not in ["block", "allow_broken"]: return host.fail("INVALID_OPTIONS", "Provide paths and valid deletion options.")
@@ -179,7 +177,14 @@ func dispatch(method: String, p: Dictionary) -> Dictionary:
 	for uri: String in options.paths:
 		if uri.get_extension() in ["uid", "import"]: return host.fail("COMPANION_TARGET", "Select the owning asset; UID and import sidecars are included automatically.", {"uri": uri})
 	var plan: Dictionary = _plan(options)
-	return plan if plan.has("error") else _store_plan(method, plan)
+	if plan.has("error"): return plan
+	var result: Dictionary = _store_plan(method, plan)
+	var idle: Dictionary = _idle_error()
+	if not idle.is_empty():
+		result.can_apply = false
+		result.apply_prerequisite = idle.error
+		result.apply_prerequisite.recovery = {"tool": "stop_game", "arguments": {"run_id": host.runtime.run_id}} if EditorInterface.is_playing_scene() else {"tool": "get_context", "arguments": {"scope": "progress"}}
+	return result
 
 func _apply(method: String, id: String) -> Dictionary:
 	if not plans.has(id) or plans[id].tool != method: return host.fail("PLAN_NOT_FOUND", "Create a fresh preview in this editor session.")

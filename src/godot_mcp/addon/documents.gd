@@ -194,11 +194,16 @@ func save_documents(p: Dictionary) -> Dictionary:
 	for uri: String in store.overlays():
 		var info: Dictionary = source_info(uri)
 		if not info.has("error"): before_sources[uri] = info.disk_revision
-	var original_root := EditorInterface.get_edited_scene_root()
-	var original_scene: String = original_root.scene_file_path if original_root else ""
+	var view: Dictionary = {"scene": host.scene_access.active_path(), "selection": host.scene_access.selection(), "target": ""}
+	var receipt: Dictionary = {"editor_epoch": host.epoch, "request_id": host.active_request.get("request_id"), "operation_id": host.active_request.get("operation_id"), "state": "pending", "phase": "preparing", "documents": [], "recorded_at": Time.get_datetime_string_from_system(true)}
+	for uri: String in p.get("uris", []): receipt.documents.append({"uri": uri, "target": p.get("save_as", {}).get(uri, uri), "state": "not_attempted"})
+	_write_save_receipt(receipt)
 	var request_index: int = -1
 	for uri: String in p.get("uris", []):
 		request_index += 1
+		receipt.phase = "saving"
+		receipt.documents[request_index].state = "outcome_unknown"
+		_write_save_receipt(receipt)
 		var target: String = str(p.get("save_as", {}).get(uri, uri))
 		if not target.begins_with("res://") or not host.paths_safe(target):
 			failed.append({"uri": uri, "index": request_index, "code": "INVALID_PATH", "error": "A res:// save_as path is required for an in-memory resource."})
@@ -215,16 +220,21 @@ func save_documents(p: Dictionary) -> Dictionary:
 			if not conflicts.is_empty():
 				failed.append({"uri": uri, "index": request_index, "code": "EXTERNAL_CHANGE", "error": "Scene saving may also save conflicting source buffers.", "conflicts": conflicts})
 				continue
-			var root: Node = host.scene_root(uri)
-			if not root:
+			var activated: Dictionary = await host.scene_access.activate(uri)
+			if activated.has("error"):
 				error = ERR_FILE_NOT_FOUND
 			else:
-				EditorInterface.open_scene_from_path(uri)
-				if target == uri: error = EditorInterface.save_scene()
+				view.target = uri
+				view.expected_selection = host.scene_access.selection()
+				receipt.phase = "native_scene_save"
+				_write_save_receipt(receipt)
+				if target == uri:
+					error = EditorInterface.save_scene()
 				else:
 					DirAccess.make_dir_recursive_absolute(target.get_base_dir())
 					EditorInterface.save_scene_as(target, false)
-					error = OK if root.scene_file_path == target and FileAccess.file_exists(target) else ERR_FILE_CANT_WRITE
+					error = OK if host.scene_access.active_path() == target and FileAccess.file_exists(target) else ERR_FILE_CANT_WRITE
+					view.target = target
 		elif uri.get_extension() in ["gd", "gdshader"]:
 			var info: Dictionary = source_info(uri)
 			if info.has("error") or info.get("external_change", false):
@@ -259,10 +269,19 @@ func save_documents(p: Dictionary) -> Dictionary:
 					EditorInterface.set_object_edited(resource, false)
 		if error == OK:
 			saved.append({"uri": uri, "saved_as": target, "index": request_index})
+			receipt.documents[request_index].state = "saved"
+			receipt.documents[request_index].disk_revision = FileAccess.get_sha256(target)
+			_write_save_receipt(receipt)
 			EditorInterface.get_resource_filesystem().update_file(target)
 		else:
 			failed.append({"uri": uri, "index": request_index, "code": "SAVE_FAILED", "error": error_string(error)})
-	if not original_scene.is_empty() and FileAccess.file_exists(original_scene): EditorInterface.open_scene_from_path(original_scene)
+	for failure: Dictionary in failed:
+		receipt.documents[int(failure.index)].state = "failed"
+		receipt.documents[int(failure.index)].error = failure
+	receipt.state = "completed" if failed.is_empty() else "partial" if not saved.is_empty() else "failed"
+	receipt.phase = "finished"
+	_write_save_receipt(receipt)
+	await host.scene_access.leave(view)
 	await host.get_tree().process_frame
 	var also_saved: Array = []
 	for uri: String in before_sources:
@@ -270,6 +289,7 @@ func save_documents(p: Dictionary) -> Dictionary:
 		if not info.has("error") and not info.unsaved and info.disk_revision != before_sources[uri] and uri not in p.get("uris", []):
 			also_saved.append(uri)
 	var result: Dictionary = DocumentResult.begin({"edit_id": null, "scope": [], "note": "Saving is not an editor undo operation. Undoing an edit does not restore disk files."})
+	result.save_receipt = {"uri": "res://.godot-mcp/last-save.json", "retained": receipt.get("retained", false)}
 	result.save_observation = "observed source buffers; Godot scene saves may persist other linked resources"
 	for item: Dictionary in saved:
 		var record: Dictionary = persistence_document(item.saved_as, "saved")
@@ -339,6 +359,26 @@ func update_signals(p: Dictionary) -> Dictionary:
 	result.connections = []
 	for item: Dictionary in staged: result.connections.append({"connection": item.spec, "connected": item.from.is_connected(item.signal, item.callable)})
 	return result
+
+func _write_save_receipt(receipt: Dictionary) -> void:
+	const PATH := "res://.godot-mcp/last-save.json"
+	var file := FileAccess.open(PATH + ".tmp", FileAccess.WRITE)
+	if not file:
+		receipt.retained = false
+		return
+	file.store_string(JSON.stringify(receipt))
+	file.flush()
+	file.close()
+	receipt.retained = DirAccess.rename_absolute(PATH + ".tmp", PATH) == OK
+
+func last_save() -> Dictionary:
+	const PATH := "res://.godot-mcp/last-save.json"
+	if not FileAccess.file_exists(PATH): return {}
+	var value: Variant = JSON.parse_string(FileAccess.get_file_as_string(PATH))
+	if not value is Dictionary: return {"state": "unavailable"}
+	value.interrupted = value.get("state") == "pending" and value.get("editor_epoch") != host.epoch
+	value.note = "Last save receipt only; outcome_unknown entries require inspecting current disk files. No automatic replay."
+	return value
 
 func get_logs(p: Dictionary) -> Dictionary:
 	var result: Dictionary

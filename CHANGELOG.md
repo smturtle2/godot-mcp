@@ -1,3 +1,13 @@
+# v4.7.2_14
+
+- Reacquire scene objects after activation, report the observed active scene, and perform inactive-scene edits and Undo in their owning scene. Resolve custom resource compatibility through script identity and inheritance.
+- Avoid reopening scenes on script-only saves, retain a small save receipt across editor restarts, and allow explicit editor reload to be deferred. Surface editor errors beside actual mutation effects and direct historical-error recovery to `get_logs`.
+- Capture complete editor windows and frame 2D/3D scene content or selections. Preserve native pixels by default and share scene, time, crop, scale and coordinate metadata between editor and game captures.
+- Report the active tool and phase on busy responses. Remove repeated source comparisons from routine runtime responses and restrict explicit comparisons to launch dependencies and observed runtime scripts.
+- Allow deletion previews while a game is running and add explicit `find_assets(mode="list")` with optional shallow traversal.
+
+The original terrain-save crash has not been reproduced or attributed; the save changes reduce unnecessary re-entry and preserve recovery evidence. Existing checks and CI remain small.
+
 # v4.7.2_13
 
 - Add `delete_assets` with a required preview/apply plan for files and folders. Plans include UID/import sidecars, current source revisions, affected editor state, and remaining references. Changed targets or references invalidate the plan; explicit `include_unsaved` and `references: "allow_broken"` keep destructive choices visible.

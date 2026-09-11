@@ -156,7 +156,7 @@ func _resume(id: String) -> void:
 		if not await files.wait_import(wait_timeout_ms): continue
 		while not stopped and host.busy: await host.get_tree().process_frame
 		if stopped: break
-		host.busy = true
+		host.enter_busy("import_assets", job.id, job.phase)
 		await _advance(job)
 		host.operation_records.publish(job.id, _result(job), not job.done)
 		host.busy = false

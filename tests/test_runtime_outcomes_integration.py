@@ -18,7 +18,7 @@ def test_send_input_preserves_applied_effects_and_nested_failures(tmp_path):
     addon = project / "addons" / "godot_mcp"
     addon.mkdir(parents=True)
     source_addon = Path(__file__).parents[1] / "src" / "godot_mcp" / "addon"
-    for name in ("runtime.gd", "source_manifest.gd", "codec.gd", "log_buffer.gd", "operation_result.gd"):
+    for name in ("runtime.gd", "capture_image.gd", "source_manifest.gd", "codec.gd", "log_buffer.gd", "operation_result.gd"):
         shutil.copy2(source_addon / name, addon / name)
     (project / "project.godot").write_text("config_version=5\n[application]\nconfig/name=\"outcome test\"\n")
     (project / "probe.gd").write_text(

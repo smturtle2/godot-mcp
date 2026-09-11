@@ -7,6 +7,7 @@ const ResourceTarget = preload("res://addons/godot_mcp/resource_target.gd")
 const PropertyEdits = preload("res://addons/godot_mcp/property_edits.gd")
 const OperationRecords = preload("res://addons/godot_mcp/operation_records.gd")
 const LogBuffer = preload("res://addons/godot_mcp/log_buffer.gd")
+const SceneAccess = preload("res://addons/godot_mcp/scene_access.gd")
 const Scenes = preload("res://addons/godot_mcp/scenes.gd")
 const Documents = preload("res://addons/godot_mcp/documents.gd")
 const Resources = preload("res://addons/godot_mcp/resources.gd")
@@ -19,7 +20,13 @@ var listener := TCPServer.new()
 var peers: Array[Dictionary] = []
 var token: String = ""
 var epoch: String = ""
-var busy: bool = false
+var busy: bool = false:
+	set(value):
+		busy = value
+		if not value: active_request.clear()
+var active_request: Dictionary = {}
+var scene_access: RefCounted
+var main_screen: String = ""
 var enabled: bool = false
 var added_autoload: bool = false
 var resources: Dictionary = {}
@@ -49,6 +56,8 @@ func _enter_tree() -> void:
 	token = Crypto.new().generate_random_bytes(32).hex_encode()
 	logs = LogBuffer.new()
 	OS.add_logger(logs)
+	scene_access = SceneAccess.new(self)
+	main_screen_changed.connect(func(screen: String) -> void: main_screen = screen)
 	documents = Documents.new(self)
 	resource_targets = ResourceTarget.new(self)
 	property_edits = PropertyEdits.new(self)
@@ -193,8 +202,12 @@ func _process(_delta: float) -> void:
 				_respond(peer, request.get("id"), fail("INVALID_PATH", "Project path contains traversal or a symlink."))
 			elif busy and request.get("method", "") == "get_operation_result":
 				_respond(peer, request.get("id"), operation_result(str(request.get("params", {}).get("operation_id", ""))))
+			elif busy and request.get("method", "") == "get_context":
+				_respond(peer, request.get("id"), progress())
+			elif busy and request.get("method", "") == "get_logs" and not request.get("params", {}).has("run_id"):
+				_respond(peer, request.get("id"), await documents.get_logs(request.get("params", {})))
 			elif busy:
-				_respond(peer, request.get("id"), fail("EDITOR_BUSY", "Another request is still running."))
+				_respond(peer, request.get("id"), fail("EDITOR_BUSY", "Wait for the reported editor operation before retrying this request.", progress()))
 			else:
 				_execute(peer, request)
 
@@ -214,19 +227,58 @@ func _respond(peer: WebSocketPeer, id: Variant, result: Dictionary) -> void:
 	peer.send_text(payload)
 
 func _execute(peer: WebSocketPeer, request: Dictionary) -> void:
-	busy = true
+	enter_busy(str(request.get("method", "request")))
+	active_request.request_id = request.get("id")
+	var since: int = logs.mark()
 	status_label.text = "Godot MCP · " + str(request.get("method", "request"))
 	var result: Dictionary = await dispatch(str(request.get("method", "")), request.get("params", {}))
-	if result.is_empty(): result = fail("INTEGRATION_ERROR", "The Godot handler did not complete. Read get_diagnostics before retrying; an edit may have partially applied.")
+	if result.is_empty(): result = fail("INTEGRATION_ERROR", "The handler did not complete. Read get_logs and inspect the reported state before retrying; a change may already have applied.", {"outcome": "unknown", "active_scene": scene_access.active_path(), "last_edit_id": edits.back().edit_id if not edits.is_empty() else null, "recovery": {"tool": "get_logs", "arguments": {"since": since, "kinds": ["error", "warning"]}}})
+	annotate_editor_logs(result, since)
 	_respond(peer, request.get("id"), result)
 	busy = false
 	if is_instance_valid(status_label):
 		status_label.text = "Godot MCP · Ready"
 
+func enter_busy(tool: String, operation_id: String = "", phase: String = "executing") -> void:
+	busy = true
+	active_request = {"tool": tool, "phase": phase, "started_at_msec": Time.get_ticks_msec()}
+	if not operation_id.is_empty(): active_request.operation_id = operation_id
+
+func progress() -> Dictionary:
+	var active: Dictionary = active_request.duplicate(true)
+	if not active.is_empty(): active.elapsed_ms = Time.get_ticks_msec() - int(active.started_at_msec)
+	var fs := EditorInterface.get_resource_filesystem()
+	var result: Dictionary = {"editor_epoch": epoch, "busy": busy, "active_operation": active, "filesystem": {"scanning": fs.is_scanning(), "importing": fs.is_importing()}, "pending_operations": assets.imports.pending() + documents.operations.pending() + documents.diagnostics.pending() + assets.deletions.pending()}
+	result.recovery = {"tool": "get_operation_result", "arguments": {"operation_id": active.operation_id, "wait_ms": 1500}} if active.has("operation_id") else {"tool": "get_context", "arguments": {"scope": "progress"}}
+	return result
+
+func annotate_editor_logs(result: Dictionary, since: int) -> void:
+	var observed: Dictionary = logs.read(since, 3, ["error", "warning"])
+	if observed.entries.is_empty(): return
+	for entry: Dictionary in observed.entries:
+		entry.erase("backtraces")
+		entry.erase("code")
+		entry.message = str(entry.message).left(500)
+	var events: Dictionary = {"since": since, "through": logs.mark(), "entries": observed.entries, "has_more": observed.has_more, "association": "observed during this operation; background errors may be unrelated", "recovery": {"tool": "get_logs", "arguments": {"since": since, "kinds": ["error", "warning"]}}}
+	if result.has("error"): result.error.get_or_add("details", {})["editor_events"] = events
+	else: result.editor_events = events
+
 func dispatch(method: String, p: Dictionary) -> Dictionary:
+	if method in ["get_scene", "create_nodes", "update_nodes", "delete_nodes", "update_signals", "get_resource", "create_resource", "update_resource", "get_animation", "edit_animation", "edit_animation_graph", "preview_animation", "get_tilemap", "edit_tileset", "paint_tiles", "_apply_source_plan"]:
+		var previous: Dictionary = await scene_access.enter(p)
+		if previous.has("error"): return previous
+		var result: Dictionary = await _dispatch(method, p)
+		await scene_access.leave(previous)
+		return result
+	return await _dispatch(method, p)
+
+func _dispatch(method: String, p: Dictionary) -> Dictionary:
 	match method:
-		"get_context": return context(p)
-		"undo_edit": return undo_edit(p)
+		"get_context":
+			var result: Dictionary = context(p)
+			if p.get("runtime_details", false): result.source_provenance = await runtime.details()
+			return result
+		"undo_edit": return await undo_edit(p)
 		"get_operation_result": return operation_result(str(p.get("operation_id", "")))
 		"_debug_state": return debugger.state()
 		"_breakpoints": return documents.breakpoints(p)
@@ -264,12 +316,14 @@ func fail(code: String, message: String, details: Dictionary = {}) -> Dictionary
 	return {"error": {"code": code, "message": message, "details": details}}
 
 func context(p: Dictionary) -> Dictionary:
+	if p.get("scope", "") == "progress": return progress()
 	var selected: Array = []
 	for node: Node in EditorInterface.get_selection().get_selected_nodes():
 		selected.append(node_ref(node))
 	var root := EditorInterface.get_edited_scene_root()
 	var data: Dictionary = {"project": ProjectSettings.globalize_path("res://"), "engine": Engine.get_version_info(), "version": Version.PRODUCT, "protocol": Version.PROTOCOL, "editor_epoch": epoch, "active_scene": root.scene_file_path if root else null, "selected_nodes": selected, "unsaved_scenes": EditorInterface.get_unsaved_scenes(), "unsaved_scripts": EditorInterface.get_script_editor().get_unsaved_files(), "unsaved_resources": dirty_resources(), "running": EditorInterface.is_playing_scene(), "run_id": runtime.run_id, "runtime_connected": runtime.ready, "debugger": debugger.state()}
 	var scope: String = p.get("scope", "all")
+	data.active_operation = progress().active_operation
 	data.pending_operations = assets.imports.pending()
 	data.pending_operations.append_array(documents.operations.pending())
 	data.pending_operations.append_array(documents.diagnostics.pending())
@@ -277,8 +331,11 @@ func context(p: Dictionary) -> Dictionary:
 	var filesystem := EditorInterface.get_resource_filesystem()
 	data.filesystem = {"scanning": filesystem.is_scanning(), "importing": filesystem.is_importing()}
 	data.recoverable_deletions = assets.deletions.recovery.list_records()
+	data.last_save = documents.last_save()
+	data.editor_windows = runtime.editor_captures.windows()
+	data.main_screen = main_screen
 	if scope == "project":
-		return {"project": data.project, "engine": data.engine, "version": data.version, "protocol": data.protocol, "recoverable_deletions": data.recoverable_deletions}
+		return {"project": data.project, "engine": data.engine, "version": data.version, "protocol": data.protocol, "recoverable_deletions": data.recoverable_deletions, "last_save": data.last_save}
 	if scope == "runtime":
 		return {"running": data.running, "run_id": data.run_id, "runtime_connected": data.runtime_connected, "debugger": data.debugger}
 	return data
@@ -301,17 +358,7 @@ func paths_safe(value: Variant) -> bool:
 	return true
 
 func scene_root(uri: String = "") -> Node:
-	if uri.is_empty():
-		return EditorInterface.get_edited_scene_root()
-	for root: Node in EditorInterface.get_open_scene_roots():
-		if root.scene_file_path == uri:
-			return root
-	if uri.begins_with("res://") and FileAccess.file_exists(uri) and EditorInterface.get_resource_filesystem().get_file_type(uri) == "PackedScene":
-		EditorInterface.open_scene_from_path(uri)
-		for root: Node in EditorInterface.get_open_scene_roots():
-			if root.scene_file_path == uri:
-				return root
-	return null
+	return scene_access.find(uri)
 
 func resolve_node(ref: Dictionary) -> Node:
 	var root := scene_root(str(ref.get("scene", "")))
@@ -321,8 +368,9 @@ func resolve_node(ref: Dictionary) -> Node:
 	return root.get_node_or_null(NodePath(path))
 
 func node_ref(node: Node) -> Dictionary:
+	if not is_instance_valid(node): return {"scene": "", "path": "", "unavailable": true}
 	for root: Node in EditorInterface.get_open_scene_roots():
-		if node == root or root.is_ancestor_of(node):
+		if is_instance_valid(root) and (node == root or root.is_ancestor_of(node)):
 			return {"scene": root.scene_file_path, "path": str(root.get_path_to(node))}
 	return {"scene": "", "path": str(node.name)}
 
@@ -406,6 +454,7 @@ func finish_edit(context_object: Object, label: String, guards: Array = [], exec
 	var history_id: int = get_undo_redo().get_object_history_id(context_object)
 	var history := get_undo_redo().get_history_undo_redo(history_id)
 	var edit: Dictionary = {"edit_id": "edit-" + epoch + "-" + str(Time.get_ticks_usec()), "history_id": history_id, "history_version": history.get_version(), "label": label, "guards": guards, "parent_edit_id": edit_parent.get("id")}
+	edit.scene = node_ref(context_object).scene if context_object is Node else ""
 	edits.append(edit)
 	edit_parent = {}
 	if edits.size() > 100: edits.pop_front()
@@ -432,6 +481,12 @@ func undo_edit(p: Dictionary) -> Dictionary:
 	var error: Dictionary = _undo_error(p.get("edit_id"))
 	if not error.is_empty(): return error
 	var edit: Dictionary = edits.back()
+	var previous: Dictionary = await scene_access.enter({"scene": edit.scene}) if not edit.get("scene", "").is_empty() else {}
+	if previous.has("error"): return previous
+	error = _undo_error(p.get("edit_id"))
+	if not error.is_empty():
+		await scene_access.leave(previous)
+		return error
 	var history := get_undo_redo().get_history_undo_redo(edit.history_id)
 	history.undo()
 	edits.pop_back()
@@ -442,7 +497,9 @@ func undo_edit(p: Dictionary) -> Dictionary:
 	if edit.has("undo_result"):
 		var result: Dictionary = edit.undo_result.call()
 		result.undo_of = edit.edit_id
+		await scene_access.leave(previous)
 		return result
+	await scene_access.leave(previous)
 	return {"undone": edit.edit_id, "label": edit.label, "saved": false}
 
 func undo_availability(edit_id: Variant) -> Dictionary:

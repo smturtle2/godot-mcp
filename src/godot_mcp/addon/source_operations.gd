@@ -193,7 +193,7 @@ func start(p: Dictionary) -> Dictionary:
 	result.connections = []
 	result.phases = {"source": "applied", "save_sources": "pending" if p.get("save", false) else "not_requested", "validation": "pending", "editor_reload": "pending", "bindings": "pending" if not captured.bindings.is_empty() else "not_requested", "save_bindings": "pending" if p.get("save", false) and not captured.bindings.is_empty() else "not_requested"}
 	result.runtime = {"state": "unverified", "reason": "Source application and editor reload do not verify a running game's behavior."}
-	var job: Dictionary = {"id": reservation.operation_id, "plans": plans, "revisions": revisions, "applied_revisions": revisions.duplicate(), "bindings": captured.bindings, "save": p.get("save", false), "result": result, "validation": {}, "reload": {}, "saves": {}, "running": true, "phase": "save_sources" if p.get("save", false) else "validation", "attempts": []}
+	var job: Dictionary = {"id": reservation.operation_id, "plans": plans, "revisions": revisions, "applied_revisions": revisions.duplicate(), "bindings": captured.bindings, "save": p.get("save", false), "result": result, "validation": {}, "reload": {}, "saves": {}, "running": true, "reload_mode": p.get("reload", "auto"), "phase": "save_sources" if p.get("save", false) else "validation", "attempts": []}
 	jobs[job.id] = job
 	_publish(job, true)
 	_advance.call_deferred(job.id)
@@ -204,6 +204,7 @@ func resume(p: Dictionary) -> Dictionary:
 	if not jobs.has(id): return host.fail("OPERATION_NOT_RESUMABLE", "This source operation has completed or its continuation expired. Inspect its retained result.", {"operation_id": id})
 	var job: Dictionary = jobs[id]
 	if job.running: return job.result.duplicate(true)
+	job.reload_mode = p.get("reload", "auto")
 	if not host.operation_records.records.has(id):
 		jobs.erase(id)
 		return host.fail("OPERATION_RESULT_EXPIRED", "The retained source operation expired; its continuation was discarded.", {"operation_id": id})
@@ -280,14 +281,14 @@ func _pause(job: Dictionary, phase: String, error: Dictionary) -> void:
 	DocumentResult.failure(job.result, phase, str(failure.get("code", "SOURCE_OPERATION_FAILED")), str(failure.get("message", "The source operation could not continue.")), {}, {"tool": "resume_script_changes", "arguments": {"operation_id": job.id}, "prerequisite": "Resolve the failure. If sources were repaired, read them and include their current revisions when resuming."}, failure.get("details", {}))
 	_publish(job, false)
 
-func _gate() -> bool:
+func _gate(job: Dictionary) -> bool:
 	while host.busy and not stopped: await host.get_tree().process_frame
 	if stopped: return false
-	host.busy = true
+	host.enter_busy("apply_script_changes", job.id, job.phase)
 	return true
 
 func _save(job: Dictionary, uris: Array, phase: String) -> bool:
-	if not await _gate(): return false
+	if not await _gate(job): return false
 	var guard: Dictionary = _guard_sources(job)
 	if not guard.is_empty():
 		host.busy = false
@@ -342,7 +343,11 @@ func _advance(id: String) -> void:
 		job.phase = "editor_reload"
 		_publish(job, true)
 	if job.phase == "editor_reload":
-		if not await _gate(): return
+		if job.get("reload_mode", "auto") == "defer":
+			for uri: String in job.revisions: job.reload[uri] = "deferred"
+			_pause(job, "editor_reload", {"code": "RELOAD_DEFERRED", "message": "Explicit editor reload was deferred. Saved files remain saved; Godot may still reload automatically. Resume with reload=auto when ready."})
+			return
+		if not await _gate(job): return
 		var guard: Dictionary = _guard_validated(job)
 		if not guard.is_empty():
 			host.busy = false
@@ -373,7 +378,7 @@ func _advance(id: String) -> void:
 	if job.phase == "bindings":
 		for binding: Dictionary in job.bindings:
 			if binding.done: continue
-			if not await _gate(): return
+			if not await _gate(job): return
 			var guard: Dictionary = _guard_validated(job)
 			if guard.is_empty(): guard = _guard_binding(binding)
 			if not guard.is_empty():
@@ -417,4 +422,4 @@ func _apply_binding(binding: Dictionary) -> Dictionary:
 		return await host.dispatch("update_nodes", {"changes": [{"node": value.node, "set": {"script": {"$type": "Resource", "uri": value.uri}}}]})
 	if binding.kind == "shader":
 		return await host.dispatch("update_resource", {"target": value.target, "set": {"shader": {"$type": "Resource", "uri": value.uri}}})
-	return documents.update_signals({binding.kind: [value]})
+	return await host.dispatch("update_signals", {binding.kind: [value]})

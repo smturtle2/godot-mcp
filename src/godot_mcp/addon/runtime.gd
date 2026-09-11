@@ -1,5 +1,6 @@
 extends Node
 ## Inert without an attached editor debugger. No network listener in game builds.
+const CaptureImage = preload("res://addons/godot_mcp/capture_image.gd")
 const Codec = preload("res://addons/godot_mcp/codec.gd")
 const LogBuffer = preload("res://addons/godot_mcp/log_buffer.gd")
 const OperationResult = preload("res://addons/godot_mcp/operation_result.gd")
@@ -79,7 +80,24 @@ func dispatch(method: String, p: Dictionary) -> Dictionary:
 			release_input()
 			return {"released": true}
 		"get_diagnostics": return logs.read(int(p.get("since", 0)), int(p.get("limit", 200)), p.get("kinds", []))
+		"_source_state": return source_state()
 	return fail("UNKNOWN_TOOL", method)
+
+func source_state() -> Dictionary:
+	var scripts: Dictionary = {}
+	var scenes: Array = []
+	var pending: Array[Node] = [get_tree().root]
+	var count: int = 0
+	while not pending.is_empty() and count < 10000:
+		var node: Node = pending.pop_back()
+		count += 1
+		for child: Node in node.get_children(): pending.append(child)
+		if not node.scene_file_path.is_empty() and node.scene_file_path not in scenes: scenes.append(node.scene_file_path)
+		var script: Script = node.get_script() as Script
+		while script:
+			if not script.resource_path.is_empty(): scripts[script.resource_path] = script.source_code.sha256_text()
+			script = script.get_base_script()
+	return {"scripts": scripts, "scenes": scenes, "complete": pending.is_empty(), "scope": "currently instantiated nodes and their script ancestry; dynamic resource loads are not exhaustive"}
 
 func describe(node: Node, properties: Array, depth: int) -> Dictionary:
 	var values: Dictionary = {}
@@ -101,21 +119,14 @@ func describe(node: Node, properties: Array, depth: int) -> Dictionary:
 
 func capture(p: Dictionary) -> Dictionary:
 	if DisplayServer.get_name() == "headless": return fail("RENDERER_UNAVAILABLE", "Game capture requires an actual rendering display.")
+	if p.get("framing", "current") != "current" or p.has("bounds_2d") or p.has("bounds_3d"): return fail("INVALID_FRAMING", "Game capture preserves the running game's view; use an editor viewport to frame content.")
 	await RenderingServer.frame_post_draw
-	var image: Image = get_viewport().get_texture().get_image()
-	if not image or image.is_empty(): return fail("CAPTURE_FAILED", "Game viewport has no image.")
-	var original: Vector2i = image.get_size()
-	var rect := Rect2i(Vector2i.ZERO, original)
-	if p.has("rect"):
-		rect = Rect2i(Vector2i(Codec.v2(p.rect.origin)), Vector2i(Codec.v2(p.rect.size))).intersection(rect)
-		if not rect.has_area(): return fail("INVALID_RECT", "Capture rectangle is outside the viewport.")
-		image = image.get_region(rect)
-	var scale: float = minf(1.0, minf(float(p.get("max_width", 1280)) / image.get_width(), float(p.get("max_height", 1280)) / image.get_height()))
-	if scale < 1: image.resize(maxi(1, int(image.get_width() * scale)), maxi(1, int(image.get_height() * scale)))
 	var uri: String = "godot://captures/" + str(OS.get_process_id()) + "/" + str(Time.get_ticks_usec()) + ".png"
-	captures[uri] = {"rect": rect, "size": image.get_size(), "original": original, "viewport": get_viewport().get_visible_rect().size}
+	var result: Dictionary = CaptureImage.pack(get_viewport().get_texture().get_image(), p, {"uri": uri, "kind": "game", "scene": get_tree().current_scene.scene_file_path if get_tree().current_scene else "", "captured_at": Time.get_datetime_string_from_system(true), "observed_at_usec": Time.get_ticks_usec(), "frame": Engine.get_process_frames(), "input_supported": true, "coordinate_space": "capture pixels; pass capture_uri to send_input"}, get_viewport().get_visible_rect().size)
+	if result.has("error"): return result
+	captures[uri] = {"rect": Codec.decode(result.crop), "size": Vector2i(result.width, result.height), "original": Codec.decode(result.pixel_size), "viewport": get_viewport().get_visible_rect().size}
 	if captures.size() > 32: captures.erase(captures.keys()[0])
-	return {"uri": uri, "image_base64": Marshalls.raw_to_base64(image.save_png_to_buffer()), "width": image.get_width(), "height": image.get_height(), "viewport_size": Codec.encode(get_viewport().get_visible_rect().size), "pixel_size": Codec.encode(original), "crop": Codec.encode(rect), "coordinate_space": "capture pixels; pass capture_uri to send_input"}
+	return result
 
 func release_input() -> void:
 	for event: InputEvent in held.values():

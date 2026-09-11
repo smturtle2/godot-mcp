@@ -27,13 +27,15 @@ async def test_run_revision_guard_startup_observation_and_changed_source(editor)
         run_id = run["run_id"]
         _, observed = await invoke(client, "wait_for_condition", run_id=run_id, condition={"scene": {"uri": "res://main.tscn"}})
         assert observed["satisfied"]
-        assert observed["source_provenance"]["source_snapshot_id"] == proof["source_snapshot_id"]
+        assert "source_provenance" not in observed
 
         patch = "*** Begin Patch\n*** Update File: res://main.gd\n@@\n-var health: int = 3\n+var health: int = 5\n*** End Patch"
         _, receipt = await invoke(client, "apply_script_changes", patch=patch, base_revisions=read["base_revisions"], wait_ms=0)
         changed = await finished(client, receipt)
         assert changed["status"] == "completed", changed
-        assert changed["runtime"]["state"] == "source_changed" and changed["runtime"]["restart_required"], changed
+        assert changed["runtime"]["state"] == "source_changed", changed
+        _, current = await invoke(client, "get_context", scope="runtime", runtime_details=True)
+        assert current["source_provenance"]["restart_required"], current
         response, blocked = await invoke(client, "run_scene", restart=True)
         assert response.is_error and blocked["error"]["code"] == "UNSAVED_DOCUMENTS"
         _, context = await invoke(client, "get_context", scope="runtime")

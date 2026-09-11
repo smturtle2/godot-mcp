@@ -1,5 +1,6 @@
 @tool
 extends RefCounted
+const ObjectTypes = preload("res://addons/godot_mcp/object_types.gd")
 ## Shared property inspection and validation for editor mutations.
 var host: EditorPlugin
 
@@ -46,8 +47,10 @@ func plan(object: Object, values: Dictionary) -> Dictionary:
 			value = StringName(value)
 		if expected == TYPE_OBJECT and value != null:
 			var expected_class := str(property_info.get("class_name", ""))
-			if not expected_class.is_empty() and not value.is_class(expected_class):
-				return _error(key + " requires " + expected_class)
+			var mismatch: Dictionary = ObjectTypes.check(value, expected_class)
+			if not mismatch.is_empty():
+				mismatch.details.property = key
+				return {"error": mismatch}
 		# Non-tool scripts cannot instantiate in the editor. Attachment compatibility
 		# depends on the declared base type; compilation belongs to source validation.
 		if object is Node and key == "script" and value is Script:

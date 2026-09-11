@@ -30,7 +30,7 @@ def project_result(name: str, result: Any) -> Any:
     """Select explicit receipt fields; never mutate a snapshot or execute work."""
     if not isinstance(result, dict) or name not in DOCUMENT_TOOLS or "error" in result or result.get("preview"):
         return copy.deepcopy(result)
-    receipt = _pick(result, ("operation_id", "status", "details_retained", "phase", "phases", "resumable", "runtime", "validation_snapshot", "result_query_error"))
+    receipt = _pick(result, ("operation_id", "status", "details_retained", "phase", "phases", "resumable", "runtime", "validation_snapshot", "result_query_error", "editor_events", "save_receipt"))
     receipt["documents"] = [_document(record) for record in result.get("documents", [])]
     if result.get("failures"):
         receipt["failures"] = copy.deepcopy(result["failures"])

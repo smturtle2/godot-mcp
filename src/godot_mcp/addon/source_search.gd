@@ -8,6 +8,9 @@ const TEXT_EXTENSIONS := ["gd", "gdshader", "tscn", "tres", "godot", "cfg", "txt
 var host: EditorPlugin
 var store: RefCounted
 
+func _excluded_component(name: String) -> bool:
+	return name.begins_with(".")
+
 func _init(editor_host: EditorPlugin, source_store: RefCounted) -> void:
 	host = editor_host
 	store = source_store
@@ -15,9 +18,10 @@ func _init(editor_host: EditorPlugin, source_store: RefCounted) -> void:
 func _in_scope(uri: String, scope: String) -> bool:
 	return uri == scope or uri.begins_with(scope.trim_suffix("/") + "/")
 
-func _catalog(scope: String) -> Dictionary:
+func _catalog(scope: String, recursive: bool = true, include_overlays: bool = true) -> Dictionary:
 	if not scope.begins_with("res://") or not host.paths_safe(scope): return host.fail("INVALID_PATH", "Search scope must remain in the project.")
 	var candidates: Dictionary = {}
+	var directories: Dictionary = {}
 	var pending: Array[String] = [scope]
 	var skipped: Array = []
 	var complete: bool = true
@@ -45,15 +49,23 @@ func _catalog(scope: String) -> Dictionary:
 			if directory.is_link(name):
 				skipped.append(path.path_join(name))
 				complete = false
-			elif not name.begins_with("."): pending.append(path.path_join(name))
+			elif not _excluded_component(name):
+				var child: String = path.path_join(name)
+				if DirAccess.dir_exists_absolute(child):
+					directories[child] = true
+					if recursive: pending.append(child)
+				else: pending.append(child)
 			name = directory.get_next()
 		directory.list_dir_end()
 		if entries > MAX_ENTRIES: break
-	for uri: String in store.overlays():
-		if _in_scope(uri, scope): candidates[uri] = true
+	if include_overlays:
+		for uri: String in store.overlays():
+			if _in_scope(uri, scope): candidates[uri] = true
 	var uris: Array = candidates.keys()
 	uris.sort()
-	return {"uris": uris, "complete": complete and skipped.is_empty(), "skipped_files": skipped}
+	var dirs: Array = directories.keys()
+	dirs.sort()
+	return {"uris": uris, "directories": dirs, "complete": complete and skipped.is_empty(), "skipped_files": skipped}
 
 func source_uris() -> Dictionary:
 	var catalog: Dictionary = _catalog("res://")
@@ -95,10 +107,16 @@ func _take(state: Dictionary, item: Dictionary, info: Dictionary) -> bool:
 	return false
 
 func search(p: Dictionary) -> Dictionary:
-	var catalog: Dictionary = _catalog(str(p.get("scope", "res://")))
-	if catalog.has("error"): return catalog
-	var query: String = str(p.get("query", "")).to_lower()
 	var mode: String = str(p.get("mode", "name"))
+	var query: String = str(p.get("query", ""))
+	if mode != "list" and query.strip_edges().is_empty(): return host.fail("INVALID_ARGUMENT", "query is required and must be nonempty for name, content, and symbol modes.")
+	if mode != "list" and mode not in ["name", "content", "symbol"]: return host.fail("INVALID_ARGUMENT", "mode must be name, content, symbol, or list.")
+	if mode != "list" and p.has("recursive"): return host.fail("INVALID_ARGUMENT", "recursive is only supported in list mode.")
+	var recursive: bool = bool(p.get("recursive", true))
+	var catalog: Dictionary = _catalog(str(p.get("scope", "res://")), recursive, mode != "list")
+	if catalog.has("error"): return catalog
+	if mode == "list": return _list(catalog, p, recursive)
+	query = query.to_lower()
 	var offset: int = maxi(0, int(p.get("offset", 0)))
 	var state: Dictionary = {"matches": [], "skip": offset, "limit": clampi(int(p.get("limit", 100)), 1, 1000), "more": false}
 	var scanned: int = 0
@@ -144,3 +162,29 @@ func search(p: Dictionary) -> Dictionary:
 				if column >= 0 and _take(state, {"uri": uri, "line": line + 1, "column": column + 1, "text": lines[line].substr(maxi(0, column - 120), 1000), "type": type}, info): break
 		if state.more: break
 	return {"matches": state.matches, "searched_files": scanned, "has_more": state.more, "next_offset": offset + state.matches.size() if state.more else null, "complete": catalog.complete, "skipped_files": catalog.skipped_files, "scope": "project paths plus live source drafts; dot paths and symlinks excluded; pagination observes current state"}
+
+func _list(catalog: Dictionary, p: Dictionary, recursive: bool) -> Dictionary:
+	var entries: Array = []
+	for uri: String in catalog.uris:
+		var type: String = "GDScript" if uri.ends_with(".gd") else ("Shader" if uri.ends_with(".gdshader") else EditorInterface.get_resource_filesystem().get_file_type(uri))
+		if not p.get("types", []).is_empty() and type not in p.types and not (type == "GDScript" and "Script" in p.types): continue
+		entries.append({"uri": uri, "type": type, "kind": "file"})
+	for uri: String in catalog.directories:
+		if not p.get("types", []).is_empty() and "Directory" not in p.types: continue
+		entries.append({"uri": uri, "type": "Directory", "kind": "directory"})
+	# Inspect the store's keys only: listing drafts must not load source text or retain a base.
+	for uri: String in store.states.keys():
+		if FileAccess.file_exists(uri): continue
+		if not _in_scope(uri, str(p.get("scope", "res://"))) or not uri.get_extension() in ["gd", "gdshader"]: continue
+		var relative: String = uri.trim_prefix(str(p.get("scope", "res://")).trim_suffix("/")).trim_prefix("/")
+		if not recursive and relative.contains("/"): continue
+		if not bool(store.states[uri].get("dirty", false)) or Array(relative.split("/")).any(func(part: String) -> bool: return _excluded_component(part)): continue
+		var type: String = "GDScript" if uri.ends_with(".gd") else "Shader"
+		if not p.get("types", []).is_empty() and type not in p.types and not (type == "GDScript" and "Script" in p.types): continue
+		entries.append({"uri": uri, "type": type, "kind": "draft"})
+	entries.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return str(a.uri) + str(a.kind) < str(b.uri) + str(b.kind))
+	var offset: int = maxi(0, int(p.get("offset", 0)))
+	var limit: int = clampi(int(p.get("limit", 100)), 1, 1000)
+	var matches: Array = entries.slice(offset, offset + limit)
+	var more: bool = offset + matches.size() < entries.size()
+	return {"matches": matches, "searched_files": catalog.uris.size(), "has_more": more, "next_offset": offset + matches.size() if more else null, "complete": catalog.complete, "skipped_files": catalog.skipped_files, "scope": "project files and directories plus live source drafts; dot paths and symlinks excluded; query is ignored in list mode; recursive controls directory traversal; pagination observes current state"}

@@ -12,10 +12,7 @@ func dispatch(method: String, p: Dictionary) -> Dictionary:
 	match method:
 		"get_scene": return get_scene(p)
 		"open_scene":
-			var root: Node = host.scene_root(str(p.get("scene", "")))
-			if not root: return host.fail("SCENE_NOT_FOUND", "Scene cannot be opened.")
-			EditorInterface.open_scene_from_path(root.scene_file_path)
-			return {"scene": root.scene_file_path, "active": EditorInterface.get_edited_scene_root() == root}
+			return await host.scene_access.activate(str(p.get("scene", "")))
 		"create_scene": return await create_scene(p)
 		"create_nodes": return await create_nodes(p)
 		"update_nodes": return await update_nodes(p)

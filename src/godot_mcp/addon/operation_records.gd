@@ -26,7 +26,10 @@ func begin(tool: String) -> Dictionary:
 		if not _evict_completed(): return host.fail("OPERATION_LIMIT", "All retained operation slots are pending; wait for completion before starting another operation.")
 	sequence += 1
 	var id: String = "operation-" + host.epoch + "-" + str(sequence)
-	records[id] = {"tool": tool, "pending": true, "recorded_at_usec": Time.get_ticks_usec(), "json": "", "bytes": 0}
+	records[id] = {"tool": tool, "pending": true, "recorded_at_usec": Time.get_ticks_usec(), "json": "", "bytes": 0, "log_cursor": host.logs.mark() if host.get("logs") else 0}
+	if host.get("active_request") is Dictionary and host.get("busy"):
+		host.active_request.operation_id = id
+		host.active_request.tool = tool
 	return {"operation_id": id}
 
 func discard(id: String) -> void:
@@ -35,6 +38,7 @@ func discard(id: String) -> void:
 func publish(id: String, result: Dictionary, pending: bool = false) -> bool:
 	if not records.has(id): return false
 	var entry: Dictionary = records[id]
+	if host.has_method("annotate_editor_logs"): host.annotate_editor_logs(result, entry.log_cursor)
 	retained_bytes -= int(entry.bytes)
 	entry.json = JSON.stringify(result)
 	entry.bytes = entry.json.to_utf8_buffer().size()

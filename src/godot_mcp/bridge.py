@@ -141,6 +141,8 @@ class EditorBridge:
                     raise ToolError("INVALID_RESPONSE", "The editor returned a non-object result.")
                 return response["result"]
             except TimeoutError as exc:
-                raise ToolError("TIMEOUT", "The editor call timed out. Inspect state before retrying a mutation.") from exc
+                raise ToolError("TIMEOUT", "The editor call timed out; its outcome is unknown. Inspect state before retrying a mutation.",
+                                {"outcome": "unknown", "request_id": call_id, "tool": name, "automatically_retried": False}) from exc
             except (OSError, WebSocketException, ValueError, KeyError, TypeError) as exc:
-                raise ToolError("EDITOR_DISCONNECTED", f"Editor communication failed: {exc}") from exc
+                raise ToolError("EDITOR_DISCONNECTED", f"Editor communication failed; its outcome is unknown: {exc}",
+                                {"outcome": "unknown", "request_id": call_id, "tool": name, "automatically_retried": False}) from exc

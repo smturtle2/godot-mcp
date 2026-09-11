@@ -18,7 +18,7 @@ def test_log_buffer_filters_before_limit_and_preserves_source_verdict(tmp_path):
     addon = project / "addons" / "godot_mcp"
     addon.mkdir(parents=True)
     source_addon = Path(__file__).parents[1] / "src" / "godot_mcp" / "addon"
-    for name in ("runtime.gd", "source_manifest.gd", "codec.gd", "log_buffer.gd", "operation_result.gd"):
+    for name in ("runtime.gd", "capture_image.gd", "source_manifest.gd", "codec.gd", "log_buffer.gd", "operation_result.gd"):
         shutil.copy2(source_addon / name, addon / name)
     (project / "project.godot").write_text("config_version=5\n[application]\nconfig/name=\"log test\"\n")
     (project / "probe.gd").write_text(

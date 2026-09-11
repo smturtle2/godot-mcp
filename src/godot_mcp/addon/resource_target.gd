@@ -1,5 +1,6 @@
 @tool
 extends RefCounted
+const ObjectTypes = preload("res://addons/godot_mcp/object_types.gd")
 
 var host: EditorPlugin
 
@@ -40,8 +41,8 @@ func resolve(selector: Dictionary, scope: String = "", expected_class: String = 
 
 func _resource_result(resource: Resource, expected_class: String, scope: String, selected: Dictionary, reference: Dictionary) -> Dictionary:
 	if not resource: return host.fail("RESOURCE_NOT_FOUND", "Resource reference is stale or does not exist.")
-	if not expected_class.is_empty() and not (resource.get_class() == expected_class or ClassDB.is_parent_class(resource.get_class(), expected_class)):
-		return host.fail("INVALID_RESOURCE", "Target resource must be a " + expected_class + ".")
+	var mismatch: Dictionary = ObjectTypes.check(resource, expected_class)
+	if not mismatch.is_empty(): return {"error": mismatch}
 	var result: Dictionary = {"resource": resource, "scope": scope, "reference": reference}
 	result.merge(selected)
 	return result
