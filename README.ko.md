@@ -57,6 +57,8 @@ Set up Godot MCP using this guide: https://github.com/smturtle2/godot-mcp/blob/m
 
 ### 3. 프로젝트 준비
 
+새 프로젝트는 에이전트에게 절대 경로를 전달해 `create_project`로 만들어 달라고 요청하세요. 프로젝트 생성, 플러그인 설치, Godot 실행과 연결을 함께 처리합니다.
+
 Godot에서 기존 프로젝트를 닫고 에이전트에게 프로젝트의 절대 경로를 전달해 `install_plugin`으로 플러그인을 설치해 달라고 요청하세요. 그런 다음 Godot에서 프로젝트를 여세요. 에이전트는 `get_context`로 프로젝트를 살펴보거나 여러 개의 열린 프로젝트 중에서 선택할 수 있습니다.
 
 터미널에서는 프로젝트 폴더에서 `godot-mcp init`을 실행해도 됩니다. 업데이트할 때는 연결된 Godot 프로젝트를 닫고 설치 스크립트를 다시 실행한 뒤 MCP를 다시 연결하세요.

@@ -8,6 +8,7 @@ import psutil
 
 from .bridge import EditorBridge, ToolError, project_path
 from .dap import DAPClient
+from .runtime_logs import RuntimeLogs
 
 
 class DebugTools:
@@ -20,6 +21,7 @@ class DebugTools:
         self.frame_ids = set()
         self.variable_refs = set()
         self.lock = asyncio.Lock()
+        self.logs = RuntimeLogs()
 
     async def close(self):
         if self.client:
@@ -38,7 +40,7 @@ class DebugTools:
             raise ToolError("STALE_FRAME", "The debugger resumed after this frame was observed.")
         return state
 
-    async def _connect(self, state):
+    async def _connect(self, state, *, attach=True):
         endpoint = self.bridge.endpoint()
         configured = endpoint.get("dap_port", 6006)
         if "GODOT_MCP_DAP_PORT" not in os.environ and endpoint.get("pid"):
@@ -61,13 +63,33 @@ class DebugTools:
         key = (endpoint.get("epoch"), port)
         if key != self.connection_key or self.client is None or self.client.task.done():
             await self.close()
-            self.client = DAPClient(port)
-            await self.client.connect()
+            self.client = DAPClient(port, on_event=self.logs.receive)
+            await self.client.connect(initialize=False)
             self.connection_key = key
             self.attached_run = None
-        if self.attached_run != state.get("run_id"):
+        if attach and not self.client.initialized:
+            retained = await self.bridge.call("_breakpoints", {"read_only": True})
+            await self.client.initialize()
+            for uri, lines in retained["all"].items():
+                await self.client.request("setBreakpoints", {
+                    "source": {"path": str(project_path(self.bridge.project, uri))},
+                    "breakpoints": [{"line": line} for line in sorted(lines)], "sourceModified": False,
+                })
+        if attach and self.attached_run != state.get("run_id"):
             await self.client.request("attach", {"project": str(self.bridge.project)})
             self.attached_run = state.get("run_id")
+
+    async def prepare_run(self):
+        # Subscribe before launching: output and exception stops are emitted
+        # by the editor even while game script execution is suspended.
+        try:
+            async with asyncio.timeout(2):
+                await self._connect({}, attach=False)
+        except (ToolError, TimeoutError) as error:
+            await self.close()
+            self.logs.begin(complete=False, error=str(error) or "Debug adapter connection timed out.")
+        else:
+            self.logs.begin()
 
     async def _wait_state(self, arguments, *, paused, old_pause=None):
         deadline = asyncio.get_running_loop().time() + 5

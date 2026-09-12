@@ -85,6 +85,9 @@ func save_new(resource: Resource, uri: String) -> Error:
 	if error != OK: return error
 	error = ResourceSaver.save(resource, uri, ResourceSaver.FLAG_CHANGE_PATH)
 	if error == OK:
+		# The saved path resolves to this editor object, including later calls
+		# that previously received its still-valid in-memory alias.
+		resource.take_over_path(uri)
 		EditorInterface.get_resource_filesystem().update_file(uri)
 		host.register_resource(resource)
 	return error

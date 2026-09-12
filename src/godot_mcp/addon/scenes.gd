@@ -1,5 +1,6 @@
 @tool
 extends RefCounted
+const Codec = preload("res://addons/godot_mcp/codec.gd")
 var host: EditorPlugin
 
 func _init(editor_host: EditorPlugin) -> void:
@@ -195,12 +196,6 @@ func build_node(spec: Dictionary, budget: Array[int]) -> Dictionary:
 			node = ClassDB.instantiate(cls) as Node
 	if not node: return host.fail("INVALID_NODE", "Node type or instance/duplicate source cannot be constructed.")
 	node.name = name
-	var values: Dictionary = spec.get("properties", {})
-	var property_plan: Dictionary = host.plan_property_changes(node, values)
-	if property_plan.has("error"):
-		node.free()
-		return property_plan
-	for change: Dictionary in property_plan.get("changes", []): node.set(change.property, change.after)
 	return {"node": node}
 
 func set_owner(node: Node, root: Node) -> void:
@@ -248,26 +243,44 @@ func create_nodes(p: Dictionary) -> Dictionary:
 			cursor = parent_by_key[cursor]
 	var nodes: Array[Node] = []
 	var budget: Array[int] = [1000]
-	for spec: Dictionary in specs:
-		var result: Dictionary = build_node(spec, budget)
-		if result.has("error"):
-			for node: Node in nodes: node.free()
-			return result
-		nodes.append(result.node)
-	var keyed_nodes: Dictionary = {}
 	for i: int in specs.size():
-		if specs[i].has("key"): keyed_nodes[str(specs[i].key)] = nodes[i]
+		var built: Dictionary = build_node(specs[i], budget)
+		if built.has("error"):
+			for node: Node in nodes: node.free()
+			return batch_error(built, i, specs[i])
+		nodes.append(built.node)
+	var parents: Array[Node] = []
 	var top_level: Array[Node] = []
 	for i: int in specs.size():
-		var spec: Dictionary = specs[i]
-		if spec.has("parent_key"):
-			keyed_nodes[str(spec.parent_key)].add_child(nodes[i], true)
-		else:
-			top_level.append(nodes[i])
+		var destination: Node = nodes[int(key_indices[specs[i].parent_key])] if specs[i].has("parent_key") else parent
+		parents.append(destination)
+		if destination == parent: top_level.append(nodes[i])
+		else: destination.add_child(nodes[i], true)
+	var plans: Array = []
+	for i: int in specs.size():
+		var values: Dictionary = specs[i].get("properties", {}).duplicate()
+		var layout: Dictionary = specs[i].get("layout", {})
+		var failure: Dictionary = {}
+		if not layout.is_empty():
+			if not nodes[i] is Control:
+				failure = host.fail("INVALID_LAYOUT", "layout requires a Control node.")
+			elif layout.has("preset") and parents[i] is Container:
+				failure = host.fail("CONTAINER_LAYOUT", "Container children use size flags and minimum_size, not an anchor preset.", {"property": "layout.preset"})
+			else:
+				for key: String in ["size_flags_horizontal", "size_flags_vertical", "minimum_size"]:
+					if layout.has(key):
+						var field: String = "custom_minimum_size" if key == "minimum_size" else key
+						if values.has(field): failure = host.fail("INVALID_LAYOUT", "Set a layout value only once.", {"property": field})
+						values[field] = host.encode(Codec.v2(layout[key])) if key == "minimum_size" else layout[key]
+		var plan: Dictionary = failure if not failure.is_empty() else host.property_edits.plan(nodes[i], values, parents[i])
+		if plan.has("error"):
+			for node: Node in top_level: node.free()
+			return batch_error(plan, i, specs[i])
+		plans.append(plan.changes)
 	host.begin_edit("Create nodes", root)
 	var undo: EditorUndoRedoManager = host.get_undo_redo()
+	undo.add_do_method(self, "apply_created_nodes", parent, root, top_level, nodes, plans, specs)
 	for node: Node in top_level:
-		undo.add_do_method(self, "add_node", parent, node, root)
 		undo.add_undo_method(parent, "remove_child", node)
 		undo.add_do_reference(node)
 	var result: Dictionary = host.finish_edit(root, "Create nodes")
@@ -276,6 +289,29 @@ func create_nodes(p: Dictionary) -> Dictionary:
 	for i: int in nodes.size():
 		result.nodes.append({"key": specs[i].get("key", ""), "ref": host.node_ref(nodes[i])})
 	return result
+
+func batch_error(result: Dictionary, index: int, spec: Dictionary, collection: String = "nodes") -> Dictionary:
+	var details: Dictionary = result.error.get("details", {})
+	details.index = index
+	details.name = str(spec.get("name", spec.get("node", {}).get("path", "")))
+	if spec.has("key"): details.key = spec.key
+	details.field = "%s[%d]" % [collection, index]
+	if details.has("property"):
+		var property: String = str(details.property)
+		details.field += "." + ("" if property.begins_with("layout.") else "properties." if collection == "nodes" else "set.") + property
+	result.error.details = details
+	return result
+
+func apply_created_nodes(parent: Node, root: Node, top_level: Array[Node], nodes: Array[Node], plans: Array, specs: Array) -> void:
+	for node: Node in top_level: add_node(parent, node, root)
+	# Parent-dependent layout is applied only after the final hierarchy exists.
+	for i: int in nodes.size():
+		for change: Dictionary in plans[i]: nodes[i].set(change.property, change.after)
+		var layout: Dictionary = specs[i].get("layout", {})
+		if layout.has("preset"):
+			var presets: Array = ["top_left", "top_right", "bottom_left", "bottom_right", "center_left", "center_top", "center_right", "center_bottom", "center", "left_wide", "top_wide", "right_wide", "bottom_wide", "vcenter_wide", "hcenter_wide", "full_rect"]
+			nodes[i].set_anchors_and_offsets_preset(presets.find(layout.preset))
+			# A Container applies its own child geometry on the next frame.
 
 func structural_error(node: Node, root: Node) -> String:
 	if node == root: return "Scene roots cannot be reparented or removed."
@@ -302,7 +338,8 @@ func update_nodes(p: Dictionary) -> Dictionary:
 	var staged: Array[Dictionary] = []
 	var targets: Array[Node] = []
 	var root: Node
-	for change: Dictionary in p.get("changes", []):
+	for change_index: int in p.get("changes", []).size():
+		var change: Dictionary = p.changes[change_index]
 		var node: Node = host.resolve_node(change.get("node", {}))
 		if not node: return host.fail("NODE_NOT_FOUND", "An update target does not exist.")
 		var scene: Node = host.scene_root(change.node.scene)
@@ -310,11 +347,9 @@ func update_nodes(p: Dictionary) -> Dictionary:
 		root = scene
 		if node in targets: return host.fail("DUPLICATE_TARGET", "Combine changes to the same node in one entry.")
 		var values: Dictionary = change.get("set", {})
-		if node.get_parent() is Container and (values.has("position") or values.has("size")):
-			return host.fail("CONTAINER_LAYOUT", "Parent Container determines position and size. Edit size flags/minimum sizes or the parent settings.")
 		var property_plan: Dictionary = host.plan_property_changes(node, values)
-		if property_plan.has("error"): return property_plan
-		if change.has("name") and (str(change.name).is_empty() or str(change.name) != str(change.name).validate_node_name()): return host.fail("INVALID_NAME", "Invalid node name.")
+		if property_plan.has("error"): return batch_error(property_plan, change_index, change, "changes")
+		if change.has("name") and (str(change.name).is_empty() or str(change.name) != str(change.name).validate_node_name()): return batch_error(host.fail("INVALID_NAME", "Invalid node name."), change_index, change, "changes")
 		if (change.has("parent") or change.has("name")) and node != root:
 			var structural: String = structural_error(node, root)
 			if not structural.is_empty(): return host.fail("INHERITED_NODE", structural)
@@ -339,7 +374,8 @@ func update_nodes(p: Dictionary) -> Dictionary:
 			for other: Dictionary in staged:
 				if other.node == parent: next = other.parent
 			parent = next
-	var affected: Array = affected_references(root, targets)
+	var structural: bool = staged.any(func(item: Dictionary) -> bool: return item.change.has("name") or item.change.has("parent"))
+	var affected: Array = affected_references(root, targets) if structural else []
 	host.begin_edit("Update nodes", root)
 	var undo: EditorUndoRedoManager = host.get_undo_redo()
 	for item: Dictionary in staged:
@@ -360,10 +396,19 @@ func update_nodes(p: Dictionary) -> Dictionary:
 	await host.get_tree().process_frame
 	result.nodes = []
 	for item: Dictionary in staged:
-		var budget: Array[int] = [1]
-		result.nodes.append(describe(item.node, root, item.change.get("set", {}).keys(), 0, budget))
-	result.affected_references = affected
-	result.reference_note = "Persistent signals follow node objects. Review NodePath/script/animation references after structural changes."
+		var node: Node = item.node
+		var change: Dictionary = item.change
+		var receipt: Dictionary = {"ref": host.node_ref(node), "properties": {}}
+		for property_name: String in change.get("set", {}).keys():
+			receipt.properties[property_name] = host.encode(node.get(property_name))
+		if change.has("name") or change.has("parent") or change.has("index"):
+			receipt.name = str(node.name)
+			receipt.parent = host.node_ref(node.get_parent()) if node.get_parent() else null
+			receipt.index = node.get_index()
+		result.nodes.append(receipt)
+	if structural:
+		result.affected_references = affected
+		result.reference_note = "Persistent signals follow node objects. Review NodePath/script/animation references after structural changes."
 	return result
 
 func delete_nodes(p: Dictionary) -> Dictionary:

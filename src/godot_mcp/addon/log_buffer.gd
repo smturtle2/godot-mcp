@@ -5,6 +5,37 @@ var mutex := Mutex.new()
 var entries: Array[Dictionary] = []
 var serial: int = 0
 var dropped: int = 0
+var journal_path: String = ""
+
+func start_journal() -> bool:
+	journal_path = "res://.godot-mcp/runtime-logs/%d.jsonl" % OS.get_process_id()
+	DirAccess.make_dir_recursive_absolute(journal_path.get_base_dir())
+	var file := FileAccess.open(journal_path, FileAccess.WRITE)
+	if not file:
+		journal_path = ""
+		return false
+	file.close()
+	return true
+
+static func read_journal(pid: int, since: int, limit: int, kinds: Array) -> Dictionary:
+	var file := FileAccess.open("res://.godot-mcp/runtime-logs/%d.jsonl" % pid, FileAccess.READ)
+	if not file: return {"entries": [], "cursor": since, "has_more": false, "collection_state": "unavailable"}
+	var buffer = load("res://addons/godot_mcp/log_buffer.gd").new()
+	var complete: bool = true
+	while file.get_position() < file.get_length():
+		var entry: Variant = JSON.parse_string(file.get_line())
+		if not entry is Dictionary or not entry.has("cursor"):
+			complete = false
+			break
+		buffer.serial = int(entry.cursor)
+		if not buffer.entries.is_empty() and buffer.entries.back().message == entry.message and buffer.entries.back().uri == entry.uri and buffer.entries.back().kind == entry.kind:
+			buffer.entries[-1] = entry
+		else:
+			buffer.entries.append(entry)
+	buffer.dropped = maxi(0, int(buffer.entries[0].cursor) - 1) if not buffer.entries.is_empty() else 0
+	var result: Dictionary = buffer.read(since, limit, kinds)
+	result.collection_state = "available" if complete else "partial"
+	return result
 
 func mark() -> int:
 	mutex.lock()
@@ -15,7 +46,7 @@ func mark() -> int:
 func _append(kind: String, message: String, uri: String = "", line: int = 0, details: Dictionary = {}) -> void:
 	mutex.lock()
 	serial += 1
-	var entry := {"cursor": serial, "kind": kind, "message": message, "uri": uri, "line": line, "time_usec": Time.get_ticks_usec(), "count": 1}
+	var entry := {"cursor": serial, "kind": kind, "message": message.left(8192), "uri": uri, "line": line, "time_usec": Time.get_ticks_usec(), "count": 1}
 	entry.merge(details)
 	if not entries.is_empty() and entries.back().message == message and entries.back().uri == uri and entries.back().kind == kind:
 		entries.back().count += 1
@@ -26,6 +57,20 @@ func _append(kind: String, message: String, uri: String = "", line: int = 0, det
 		if entries.size() > 2000:
 			entries.pop_front()
 			dropped += 1
+	if not journal_path.is_empty():
+		var file := FileAccess.open(journal_path, FileAccess.READ_WRITE)
+		if file:
+			if file.get_length() > 2 * 1024 * 1024:
+				file.close()
+				file = FileAccess.open(journal_path, FileAccess.WRITE)
+				if file:
+					for retained: Dictionary in entries.slice(-64): file.store_line(JSON.stringify(retained))
+			else:
+				file.seek_end()
+				file.store_line(JSON.stringify(entries.back()))
+			if file:
+				file.flush()
+				file.close()
 	mutex.unlock()
 
 func _log_message(message: String, error: bool) -> void:

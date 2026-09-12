@@ -160,6 +160,7 @@ func run_scene(p: Dictionary) -> Dictionary:
 	if pending.has("error"): return pending
 	if not pending.uris.is_empty(): return host.fail("UNSAVED_DOCUMENTS", "Documents changed while preparing the run; read and save them explicitly before retrying.", pending)
 	run_id = "run-" + host.epoch + "-" + str(Time.get_ticks_usec())
+	runtime_info = {}
 	expected_sources = SourceManifest.capture(SourceManifest.run_roots(scene))
 	startup_sources = {}
 	startup_state = "unverified"

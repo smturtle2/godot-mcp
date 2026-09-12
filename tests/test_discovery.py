@@ -155,10 +155,11 @@ async def test_successful_selection_is_reused_and_closed_selection_errors(tmp_pa
     bridge = register(home, project)
     server = create_server(home=home)
 
-    selected = await call_tool(server, "get_context", {"project": str(project)})
-    reused = await call_tool(server, "get_context")
-    (home / "editors" / f"{project.name}.json").unlink()
-    closed = await call_tool(server, "get_context")
+    async with Client(server) as client:
+        selected = await client.call_tool("get_context", {"project": str(project)})
+        reused = await client.call_tool("get_context", {})
+        (home / "editors" / f"{project.name}.json").unlink()
+        closed = await client.call_tool("get_context", {})
 
     assert not selected.is_error and not reused.is_error
     assert reused.structured_content["project"] == str(project)

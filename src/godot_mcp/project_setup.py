@@ -13,6 +13,7 @@ from pathlib import Path
 import psutil
 
 from .bridge import EditorBridge, ToolError
+from .editor_environment import editor_environment
 from .installer import _atomic_write, initialize_project
 
 
@@ -21,11 +22,12 @@ class ProjectSetup:
         self.home = home.resolve()
         self.lock = asyncio.Lock()
 
-    async def create(self, project: Path, name: str | None = None, editor: str | None = None) -> dict:
+    async def create(self, project: Path, name: str | None = None, editor: str | None = None,
+                     environment: dict[str, str] | None = None) -> dict:
         async with self.lock:
-            return await self._create(project.resolve(), name, editor)
+            return await self._create(project.resolve(), name, editor, environment)
 
-    async def _create(self, project: Path, name: str | None, editor: str | None) -> dict:
+    async def _create(self, project: Path, name: str | None, editor: str | None, environment: dict | None) -> dict:
         key = hashlib.sha256(str(project).encode()).hexdigest()
         journal = self.home / "project-starts" / f"{key}.json"
         try:
@@ -41,6 +43,7 @@ class ProjectSetup:
             record = {"project": str(project), "project_created": False, "plugin_installed": False}
         result = {"project": str(project), "status": "partial", "project_created": record["project_created"],
                   "plugin_installed": record["plugin_installed"], "editor_started": False, "connected": False}
+        log_start = 0
         stage = "create"
         try:
             if not record["project_created"]:
@@ -85,11 +88,13 @@ class ProjectSetup:
                     raise ToolError("EDITOR_NOT_FOUND", "Pass editor or set GODOT to a Godot executable, then retry create_project.")
                 log_path = project / ".godot-mcp" / "editor.log"
                 result["editor_log"] = str(log_path)
+                launch_env = await editor_environment(environment)
+                log_start = log_path.stat().st_size if log_path.exists() else 0
                 with log_path.open("ab") as log:
                     process = await asyncio.create_subprocess_exec(
                         executable, "--editor", "--path", str(project), stdin=subprocess.DEVNULL,
                         stdout=log, stderr=subprocess.STDOUT, start_new_session=os.name == "posix",
-                        env={**os.environ, "GODOT_MCP_HOME": str(self.home)},
+                        env={**launch_env, "GODOT_MCP_HOME": str(self.home)},
                     )
                 result.update(editor_started=True, editor_pid=process.pid)
                 record.update(pid=process.pid, process_created_at=psutil.Process(process.pid).create_time())
@@ -103,7 +108,7 @@ class ProjectSetup:
                 except ToolError as error:
                     if error.code != "EDITOR_DISCONNECTED":
                         raise
-                    if not psutil.pid_exists(record["pid"]):
+                    if not psutil.pid_exists(record["pid"]) or (not running and process.returncode is not None):
                         raise ToolError("EDITOR_EXITED", "Godot exited before connecting. Inspect editor_log, then retry create_project.") from error
                     if time.monotonic() >= deadline:
                         raise ToolError("EDITOR_CONNECT_PENDING", "Godot started but has not connected yet. Retry create_project to reconnect without launching another editor.") from error
@@ -114,4 +119,16 @@ class ProjectSetup:
         except (OSError, ValueError, psutil.Error, ToolError) as error:
             result["failures"] = [{"phase": stage, "code": error.code if isinstance(error, ToolError) else "PROJECT_SETUP_FAILED", "message": str(error)}]
             result["editor_log"] = str(project / ".godot-mcp" / "editor.log")
+            try:
+                path = Path(result["editor_log"])
+                with path.open("rb") as stream:
+                    stream.seek(max(log_start, path.stat().st_size - 4096))
+                    excerpt = stream.read(4096).decode("utf-8", errors="replace").strip()
+                if excerpt:
+                    result["editor_error"] = excerpt
+                    if any(message in excerpt.lower() for message in ("can't open display", "cannot open display", "couldn't connect to wayland", "displayserver")):
+                        result["failures"][0]["code"] = "DISPLAY_UNAVAILABLE"
+                        result["failures"][0]["message"] = "Godot could not connect to the display session. Supply the session environment and retry create_project; the created project is retained."
+            except OSError:
+                pass
             return result

@@ -130,7 +130,8 @@ async def test_create_project_resumes_after_launch_failure_without_replacing_edi
     monkeypatch.setattr(project_setup, "EditorBridge", Bridge)
     monkeypatch.setattr(project_setup.asyncio, "create_subprocess_exec", launch)
     setup = project_setup.ProjectSetup(home)
-    failed = await setup.create(project, 'Game "Name"', "missing-godot")
+    failed = await setup.create(project, 'Game "Name"', "missing-godot", {"DISPLAY": ":explicit"})
+    assert launches[0][1]["env"]["DISPLAY"] == ":explicit"
     assert failed["status"] == "partial" and failed["project_created"] and failed["plugin_installed"]
     assert not failed["editor_started"] and failed["failures"][0]["phase"] == "launch"
     content = (project / "project.godot").read_text() + '\n[custom]\nvalue=42\n'

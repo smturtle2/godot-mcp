@@ -24,8 +24,8 @@ def test_validation_reports_useful_paths_for_discriminated_inputs():
     assert error.details["path"] == ["events", 0, "event"]
     assert error.details["choices"] == ["key", "mouse_button", "mouse_motion", "touch", "drag", "action"]
 
-    error = rejects("send_input", {"run_id": "run-1", "events": [{"event": {"key": {"key": "Space", "pressed": True}}}], "wait_for": {"node": {"node": {"path": "/root/Main"}}}})
-    assert error.details["path"] == ["wait_for", "node", "node", "run_id"]
+    error = rejects("send_input", {"run_id": "run-1", "events": [{"event": {"key": {"key": "Space", "pressed": True}}}], "wait_for": {"node": {"node": {"run_id": "run-1"}}}})
+    assert error.details["path"] == ["wait_for", "node", "node", "path"]
 
 
 def test_validation_reports_resource_alternatives_without_echoing_large_values():

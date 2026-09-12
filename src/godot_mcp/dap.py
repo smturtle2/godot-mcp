@@ -10,7 +10,7 @@ from .bridge import ToolError
 
 
 class DAPClient:
-    def __init__(self, port: int, timeout: float = 10):
+    def __init__(self, port: int, timeout: float = 10, on_event=None):
         self.port = port
         self.timeout = timeout
         self.reader = None
@@ -19,8 +19,10 @@ class DAPClient:
         self.sequence = 0
         self.pending = {}
         self.events = deque(maxlen=500)
+        self.on_event = on_event
+        self.initialized = False
 
-    async def connect(self):
+    async def connect(self, *, initialize=True):
         try:
             self.reader, self.writer = await asyncio.wait_for(
                 asyncio.open_connection("127.0.0.1", self.port), self.timeout
@@ -28,6 +30,15 @@ class DAPClient:
         except (OSError, TimeoutError) as exc:
             raise ToolError("DAP_DISCONNECTED", "Enable the Godot Debug Adapter server in Editor Settings > Network.") from exc
         self.task = asyncio.create_task(self._read())
+        if not initialize:
+            # Godot broadcasts output/stops to connected peers. A read-only
+            # subscription must not initialize: Godot's initialize request
+            # clears editor breakpoints when sync_breakpoints is disabled.
+            return await self.request("threads")
+        return await self.initialize()
+
+    async def initialize(self):
+        self.initialized = True
         return await self.request("initialize", {
             "clientID": "godot-mcp", "adapterID": "godot", "pathFormat": "path",
             "linesStartAt1": True, "columnsStartAt1": True,
@@ -54,6 +65,8 @@ class DAPClient:
                             future.set_exception(ToolError("DAP_ERROR", message.get("message", "Debug adapter rejected the request."), message.get("body", {})))
                 elif message.get("type") == "event":
                     self.events.append(message)
+                    if self.on_event:
+                        self.on_event(message)
         except asyncio.CancelledError:
             pass
         except (OSError, asyncio.IncompleteReadError, asyncio.LimitOverrunError, ValueError, TypeError) as exc:

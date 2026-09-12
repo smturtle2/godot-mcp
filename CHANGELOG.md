@@ -1,3 +1,12 @@
+# v4.7.2_20
+
+- Recover the desktop session environment when creating projects from an MCP server without display variables. Support explicit environment overrides and return the editor's launch error with retryable setup outcomes.
+- Correct held-input release and viewport-to-window pointer conversion. Use captured image coordinates directly, and reject captures whose viewport transform has changed.
+- Read runtime logs while the debugger is paused, retaining exception details and bounded run history without clearing editor breakpoints. Surface observed startup errors in run receipts without adding automatic diagnostics.
+- Create UI nodes with their intended parent layout context, named layout presets, and inline resources in one batch. Include the node index, name, and field in batch errors; return only requested node changes in ordinary update receipts.
+- Remember each MCP connection's observed source revisions and selected run for follow-up calls. Preserve conflict checks, explicit overrides, and stale-run detection. Keep saved resources addressable by their project path.
+- Omit unrequested checks from status summaries. Simplify development guidance around small scenes, embedded resources, optional diagnostics, and concise completion reports; retain native Godot UI behavior and editor-editable structure.
+
 # v4.7.2_19
 
 - Make saved scenes and Godot nodes the baseline for editor-editable components. Clarify runtime-only authoring costs and preserve native UI interaction when customizing layout and appearance.

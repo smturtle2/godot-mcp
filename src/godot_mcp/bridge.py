@@ -68,7 +68,11 @@ def validate_values(project: Path, value, depth: int = 0) -> None:
                     raise ToolError("INVALID_VALUE", f"{tag} requires string value.")
             elif tag == "Resource":
                 uri = value.get("uri", "")
-                if not isinstance(uri, str) or not uri.startswith(("res://", "godot://resources/")):
+                if "class" in value:
+                    if ("uri" in value or not isinstance(value["class"], str) or not value["class"]
+                            or not isinstance(value.get("properties", {}), dict)):
+                        raise ToolError("INVALID_VALUE", "Inline Resource requires class/properties and no uri.")
+                elif not isinstance(uri, str) or not uri.startswith(("res://", "godot://resources/")):
                     raise ToolError("INVALID_VALUE", "Resource requires a resource URI.")
             elif tag in ("Rect2", "Rect2i"):
                 if not all(isinstance(value.get(f), dict) and "x" in value[f] and "y" in value[f] for f in ("position", "size")):

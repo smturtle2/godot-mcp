@@ -1,10 +1,10 @@
 # Working with the Godot project
 
-Paths in tool arguments are project URIs such as `res://main.tscn`; local files supplied to import or export use `file:///...`. Node references contain both the scene URI and a relative node path. Values returned by the server are authoritative: use returned node references, resource URIs, run IDs, capture URIs, revisions, operation IDs, plan IDs, and deletion IDs in later calls. In examples below, angle-bracket values are placeholders for those returned values.
+Paths in tool arguments are project URIs such as `res://main.tscn`; local files supplied to import or export use `file:///...`. Node references contain both the scene URI and a relative node path. Values returned by the server are authoritative: use returned paths and references in later calls. Keep explicit IDs such as run IDs, revisions, operation IDs, and deletion IDs when they identify concurrent histories or support recovery; paths remain the primary way to address project content. In examples below, angle-bracket values are placeholders for those returned values.
 
 For shared rules about revisions, scopes, and operation receipts, see `get_guide` section `model`. For recovery of pending work, stale plans, conflicts, or deletions, see `get_guide` section `recovery`.
 
-For source-change and save receipts, and their `get_operation_result` snapshots, `state_summary` combines `applied`, `saved`, `editor_reload`, `diagnostics`, and `runtime`. These are recorded operation facts: when no diagnostics were requested, its value is `not_requested`, and `runtime` remains `unverified`; use runtime observations to establish behavior separately. Operation snapshots are historical and do not describe the current project state.
+For source-change and save receipts, and their `get_operation_result` snapshots, `state_summary` reports only stages with evidence, such as `applied`, `saved`, `editor_reload`, `diagnostics`, and `runtime`. Omitted stages were not requested or are unverified. Operation snapshots are historical and do not describe the current project state.
 
 ## Scenes and nodes
 
@@ -64,13 +64,19 @@ Use `instance` with a PackedScene URI, or `duplicate` with an existing `{scene, 
 }
 ```
 
+For a `Control`, `layout` is applied after parenting and can combine a named Godot preset, size flags, and minimum size. Property values can create an inline engine Resource, including nested resources. A preset is rejected when the parent is a `Container`, whose layout rules control its children:
+
+```json
+{"parent":{"scene":"res://level.tscn","path":"."},"nodes":[{"name":"Panel","source":{"class":"Panel"},"properties":{"material":{"$type":"Resource","class":"StandardMaterial3D","properties":{"roughness":0.6}}},"layout":{"preset":"full_rect","size_flags_horizontal":4,"minimum_size":{"x":180,"y":48}}}]}
+```
+
 Use `delete_nodes` for related nodes and retain its `edit_id` if you may need `undo_edit`. Inherited members, overlapping selections, and persistent references can constrain deletion. Save authored scenes and scripts explicitly with `save_documents`:
 
 ```json
 {"uris":["res://level.tscn","res://player.gd"]}
 ```
 
-Saving and validation are separate operations. If a scene save would include additional edited authored documents, the server reports the paths to add.
+Saving and validation are separate operations. The normal loop is edit, save the authored documents, and run the relevant scene. If a scene save would include additional edited authored documents, the server reports the paths to add.
 
 ## Sources, bindings, and resources
 
@@ -90,7 +96,7 @@ Pass the relevant `base_revisions` to `apply_script_changes`. Its patch language
 }
 ```
 
-The revision placeholder must be the actual 64-character revision returned by `read_scripts` or `find_assets`; do not invent one. A patch can add or update several sources and can attach a script or shader and connect signals in the same operation. Script attachments name a node; shader attachments require an explicitly scoped ShaderMaterial target:
+The revision placeholder must be the actual 64-character revision returned by `read_scripts` or `find_assets`; do not invent one. Each MCP connection remembers read bases and applied revisions. If `base_revisions` is omitted, remembered bases are used; an explicit map selects an older or concurrent read. The server never silently substitutes the newest unread revision. A patch can add or update several sources, attach a shader, and connect signals in the same operation. Existing scripts are assigned through a node property such as `properties.script` with a Resource URI; there is no separate script attachment argument. Shader attachments require an explicitly scoped ShaderMaterial target:
 
 ```json
 {
@@ -205,7 +211,7 @@ Start a scene with `run_scene`, explicitly naming any authored documents that mu
 {"scene":"res://level.tscn","save_uris":["res://player.gd"],"restart":true}
 ```
 
-Use the returned `run_id` with `inspect_runtime`, `wait_for_condition`, `send_input`, `capture_viewport`, `sample_performance`, and `stop_game`. A runtime node reference is `{run_id, path}` and its path starts at `/root`:
+Use the returned `run_id` with `inspect_runtime`, `wait_for_condition`, `send_input`, `capture_viewport`, `sample_performance`, and `stop_game`. After `run_scene` or `get_context`, `run_id` is optional for these tools and the selected run is remembered. Nested runtime node references inherit the selected or requested run. A runtime node reference is `{run_id, path}` and its path starts at `/root`:
 
 ```json
 {"node":{"run_id":"<run-id>","path":"/root/Level/Player"},"depth":1}
@@ -230,11 +236,11 @@ Use `observe` to read selected runtime properties before and after injection:
 
 Each `observations.before` and `observations.after` entry includes `values`, `exists`, `unavailable_properties`, `observed_at_usec`, and `frame`. A missing node or property is explicitly unavailable; no value is inferred. If `wait_for` is supplied, its result includes `observed_at_usec`/`frame` and `satisfied_at_usec`/`satisfied_frame`; signal conditions record the first emission. A `capture_after` result has its own timestamp/frame. The after read occurs after the condition and before capture, but these steps are not atomic and do not pause the game or prove causality. If observation or capture fails after input was applied, retry the observation rather than replaying the input.
 
-Key, mouse button, mouse motion, touch, drag, and action events are each explicit variants. Without `capture_uri`, pointer coordinates use viewport pixels. With a capture URI, they use capture pixels; held mouse and key state persists until released.
+Key, mouse button, mouse motion, touch, drag, and action events are each explicit variants. Action events go through the configured action names; they do not test the underlying key or mouse mappings. When checking input mappings, inject the corresponding key or mouse event. Without `capture_uri`, pointer coordinates use viewport pixels. With a capture URI, use the returned capture image coordinates directly; do not pre-transform them for crop or scale. Held mouse and key state persists until released.
 
-`capture_viewport` can capture `game`, `editor_2d`, `editor_3d`, or an `editor_window`. A game capture uses the run ID; editor-window capture uses a `window_id` from `get_context.editor_windows`. The result includes a `godot://` capture URI, dimensions, crop, scale, and coordinate mapping. Pass that URI to later input when coordinate alignment matters.
+`capture_viewport` can capture `game`, `editor_2d`, `editor_3d`, or an `editor_window`. A game capture uses the run ID; editor-window capture uses a `window_id` from `get_context.editor_windows`. The result includes a `godot://` capture URI, dimensions, crop, scale, and coordinate mapping. Pass that URI to later input when coordinate alignment matters; pointer coordinates remain in the returned capture image coordinate space.
 
-For current source validation, call `get_diagnostics`; it reports a captured snapshot and waits up to 15 seconds by default. Set `wait_ms` to `0` for an immediate result or pending operation; there is no extra validation step. Use `get_logs` for historical editor or run entries. They answer different questions: logs show history, while diagnostics validate the requested snapshot. For a suspended GDScript run, use `inspect_debugger` with the returned `pause_id` or frame handles, then `debug_control` with `pause`, `continue`, `step_over`, or `step_into`. Frame handles become stale after continuing. `set_breakpoints` manages MCP-owned breakpoints while preserving user breakpoints.
+For current source validation, call `get_diagnostics` when diagnostics are useful; it reports a captured snapshot and waits up to 15 seconds by default. Set `wait_ms` to `0` for an immediate result or pending operation. Diagnostics are optional and are not a mandatory gateway to running or handing off a change. Use `get_logs` for historical editor or run entries. `origin:"runtime"` uses the remembered run, and the journal remains readable while paused or stopped. Runs launched through this server retain editor-side output and exception stops from editor debug output. Logs answer historical questions; diagnostics validate a requested snapshot. For a suspended GDScript run, use `inspect_debugger` with the returned `pause_id` or frame handles, then `debug_control` with `pause`, `continue`, `step_over`, or `step_into`. Frame handles become stale after continuing. `set_breakpoints` manages MCP-owned breakpoints while preserving user breakpoints. Each operation result or observation establishes only the scope it directly covers; do not treat it as proof of unrelated behavior.
 
 ## Settings and export
 

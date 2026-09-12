@@ -156,6 +156,8 @@ async def test_runtime_and_debugger(editor, monkeypatch):
     monkeypatch.delenv('GODOT_MCP_DAP_PORT', raising=False)
     d = DebugTools(b)
     run = None
+    client = Client(create_server(b.project, b))
+    await client.__aenter__()
     try:
         r = await call(b, 'run_scene')
         run = r['run_id']
@@ -177,11 +179,15 @@ async def test_runtime_and_debugger(editor, monkeypatch):
         (tmp / 'capture.png').write_bytes(pixels)
         await call(b, 'stop_game', run_id=run)
         await d.call('set_breakpoints', {'breakpoints': [{'uri': 'res://main.gd', 'line': 7}], 'replace': True})
-        run = (await call(b, 'run_scene'))['run_id']
+        launched = await client.call_tool('run_scene', {})
+        assert not launched.is_error, launched
+        run = launched.structured_content['run_id']
         for _ in range(100):
             if (await b.call('_debug_state', {}))['paused']:
                 break
             await asyncio.sleep(.03)
+        history = await client.call_tool('get_logs', {'origin': 'runtime'})
+        assert not history.is_error and history.structured_content['history']
         state = await d.call('inspect_debugger', {'run_id': run})
         assert state['frames'][0]['line'] == 7
         members = next(scope for scope in state['scopes'] if scope['name'] == 'Members')['variables']
@@ -193,7 +199,24 @@ async def test_runtime_and_debugger(editor, monkeypatch):
         assert caught.value.code == 'STALE_FRAME'
         await d.call('set_breakpoints', {'breakpoints': [], 'replace': True})
         assert not (await d.call('debug_control', {'run_id': run, 'action': 'continue'}))['paused']
+        await client.call_tool('stop_game', {})
+        read = await client.call_tool('read_scripts', {'documents': [{'uri': 'res://main.gd'}]})
+        assert not read.is_error
+        patch = "*** Begin Patch\n*** Update File: res://main.gd\n@@\n func _unhandled_input(event: InputEvent) -> void:\n+\tif event.is_action_pressed(\"ui_cancel\"):\n+\t\tprint(\"MCP before crash\")\n+\t\tvar target: Variant = self\n+\t\ttarget.definitely_missing()\n*** End Patch"
+        applied = await client.call_tool('apply_script_changes', {'patch': patch, 'save': True})
+        assert not applied.is_error, applied
+        launched = await client.call_tool('run_scene', {})
+        assert not launched.is_error, launched
+        run = launched.structured_content['run_id']
+        failure = await client.call_tool('send_input', {'events': [{'event': {'key': {'key': 'Escape', 'pressed': True}}}], 'release_after': True})
+        assert failure.is_error and failure.structured_content['error']['code'] == 'DEBUGGER_PAUSED'
+        history = await client.call_tool('get_logs', {'origin': 'runtime'})
+        assert not history.is_error, history
+        assert any('MCP before crash' in e['message'] for e in history.structured_content['entries'])
+        assert any('definitely_missing' in e['message'] for e in history.structured_content.get('exception_stops', [])), history
+
     finally:
         if run:
             await b.call('stop_game', {'run_id': run})
         await d.close()
+        await client.__aexit__(None, None, None)

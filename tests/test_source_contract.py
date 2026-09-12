@@ -72,3 +72,24 @@ def test_removed_script_tools_are_not_published():
     assert "create_script" not in SPECS
     assert "edit_script" not in SPECS
     assert "read_script" not in SPECS
+
+
+def test_client_defaults_preserve_read_bases_and_run_identity():
+    from godot_mcp.client_state import ClientState
+
+    client, other = ClientState(), ClientState()
+    project = '/project'
+    client.observe(project, 'read_scripts', {'editor_epoch': 'editor-1', 'documents': [
+        {'uri': 'res://main.gd', 'revision': 'read-revision'}]})
+    patch = {'patch': '*** Begin Patch\n*** Update File: res://main.gd\n@@\n-old\n+new\n*** End Patch'}
+    client.observe(project, 'get_operation_result', {'documents': [{'uri': 'res://main.gd', 'revision': 'late-revision'}]})
+    assert client.prepare(project, 'apply_script_changes', patch)['base_revisions'] == {'res://main.gd': 'read-revision'}
+    assert other.prepare(project, 'apply_script_changes', patch)['base_revisions'] == {}
+    explicit = {**patch, 'base_revisions': {'res://main.gd': 'explicit'}}
+    assert client.prepare(project, 'apply_script_changes', explicit)['base_revisions'] == explicit['base_revisions']
+    client.observe(project, 'run_scene', {'run_id': 'run-1'})
+    args = client.prepare(project, 'send_input', {'events': [], 'observe': [{'node': {'path': '/root/Main'}, 'properties': ['health']}]})
+    assert args['run_id'] == args['observe'][0]['node']['run_id'] == 'run-1'
+    assert client.prepare(project, 'stop_game', {'run_id': 'explicit-run'})['run_id'] == 'explicit-run'
+    client.observe(project, 'get_context', {'editor_epoch': 'editor-2'})
+    assert client.prepare(project, 'apply_script_changes', patch)['base_revisions'] == {}

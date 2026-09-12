@@ -39,7 +39,7 @@ def test_receipt_uses_explicit_essential_fields_without_mutating_snapshot():
     assert value == original
     assert receipt == {
         "operation_id": "operation-test-1", "details_retained": True, "status": "completed",
-        "state_summary": {"applied": "1/1", "saved": "not_requested", "editor_reload": "not_requested", "diagnostics": "valid", "runtime": "unverified"},
+        "state_summary": {"applied": "1/1", "diagnostics": "valid"},
         "documents": [{"uri": "res://a.gd", "effect": "updated", "state": "modified", "revision": "current", "validation": {"state": "valid"}}],
         "undo": {"edit_id": "edit-1"},
     }

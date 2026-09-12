@@ -19,6 +19,7 @@ func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	active = true
 	logs = LogBuffer.new()
+	logs.start_journal()
 	OS.add_logger(logs)
 	EngineDebugger.register_message_capture("godot_mcp", _capture)
 	EngineDebugger.send_message("godot_mcp:ready", [{"pid": OS.get_process_id(), "renderer": RenderingServer.get_current_rendering_method(), "display": DisplayServer.get_name(), "source_startup": SourceManifest.startup()}])
@@ -124,20 +125,32 @@ func capture(p: Dictionary) -> Dictionary:
 	var uri: String = "godot://captures/" + str(OS.get_process_id()) + "/" + str(Time.get_ticks_usec()) + ".png"
 	var result: Dictionary = CaptureImage.pack(get_viewport().get_texture().get_image(), p, {"uri": uri, "kind": "game", "scene": get_tree().current_scene.scene_file_path if get_tree().current_scene else "", "captured_at": Time.get_datetime_string_from_system(true), "observed_at_usec": Time.get_ticks_usec(), "frame": Engine.get_process_frames(), "input_supported": true, "coordinate_space": "capture pixels; pass capture_uri to send_input"}, get_viewport().get_visible_rect().size)
 	if result.has("error"): return result
-	captures[uri] = {"rect": Codec.decode(result.crop), "size": Vector2i(result.width, result.height), "original": Codec.decode(result.pixel_size), "viewport": get_viewport().get_visible_rect().size}
+	captures[uri] = {"mapping": Codec.decode(result.mapping.capture_to_viewport), "viewport": get_viewport().get_visible_rect().size, "input_transform": get_viewport().get_final_transform()}
 	if captures.size() > 32: captures.erase(captures.keys()[0])
 	return result
 
+func inject_event(event: InputEvent) -> void:
+	# parse_input_event feeds Window.push_input in embedder coordinates. Our
+	# public pointer coordinates are local to the viewport, so undo that
+	# implicit conversion once while retaining Input state and emulation.
+	var injected: InputEvent = event.xformed_by(get_viewport().get_final_transform())
+	if injected is InputEventMouse: injected.global_position = injected.position
+	Input.parse_input_event(injected)
+
 func release_input() -> void:
-	for event: InputEvent in held.values():
+	for retained: InputEvent in held.values():
+		var event: InputEvent = retained.duplicate()
 		if event is InputEventKey or event is InputEventMouseButton or event is InputEventScreenTouch or event is InputEventAction:
+			event.pressed = false
+			if event is InputEventAction: event.strength = 0.0
+			if event is InputEventKey: event.echo = false
 			if event is InputEventMouseButton:
 				held_mouse_buttons &= ~mouse_button_bit(event.button_index)
 				event.button_mask = held_mouse_buttons
-				event.pressed = false
-			Input.parse_input_event(event)
+			inject_event(event)
 	held.clear()
 	held_mouse_buttons = 0
+	Input.flush_buffered_events()
 
 func event_key(spec: Dictionary) -> String:
 	var kind: String = str(spec.get("kind", ""))
@@ -149,10 +162,10 @@ func mouse_button_bit(button: int) -> int:
 	return 1 << (button - MOUSE_BUTTON_LEFT)
 
 func capture_position(position: Vector2, info: Dictionary) -> Vector2:
-	return (Vector2(info.rect.position) + position * Vector2(info.rect.size) / Vector2(info.size)) * Vector2(info.viewport) / Vector2(info.original)
+	return info.mapping * position
 
 func capture_delta(delta: Vector2, info: Dictionary) -> Vector2:
-	return delta * Vector2(info.rect.size) / Vector2(info.size) * Vector2(info.viewport) / Vector2(info.original)
+	return info.mapping.basis_xform(delta)
 
 func make_event(spec: Dictionary, capture_uri: String) -> Dictionary:
 	var selected: Dictionary = select_case(spec.get("event", {}), ["key", "mouse_button", "mouse_motion", "touch", "drag", "action"], "event")
@@ -160,6 +173,11 @@ func make_event(spec: Dictionary, capture_uri: String) -> Dictionary:
 	var kind: String = selected.kind
 	var data: Dictionary = selected.value
 	var position := Codec.v2(data.get("position", {}))
+	if not capture_uri.is_empty():
+		if not captures.has(capture_uri): return fail("STALE_CAPTURE", "Capture metadata expired or belongs to another run.")
+		var captured: Dictionary = captures[capture_uri]
+		if captured.viewport != get_viewport().get_visible_rect().size or not captured.input_transform.is_equal_approx(get_viewport().get_final_transform()):
+			return fail("STALE_CAPTURE", "The viewport size or input transform changed; capture again before pointer input.")
 	if not capture_uri.is_empty() and data.has("position"):
 		if not captures.has(capture_uri): return fail("STALE_CAPTURE", "Capture metadata expired or belongs to another run.")
 		var info: Dictionary = captures[capture_uri]
@@ -238,7 +256,8 @@ func watch_condition(condition: Dictionary) -> Dictionary:
 	for signal_info: Dictionary in node.get_signal_list():
 		if str(signal_info.name) == name: count = signal_info.args.size()
 	var watch: Dictionary = {"node": node, "signal": name, "seen": false}
-	var callback: Callable = signal_seen.bind(watch).unbind(count)
+	var callback: Callable = signal_seen.bind(watch)
+	if count > 0: callback = callback.unbind(count)
 	watch.callback = callback
 	node.connect(name, callback)
 	return watch
@@ -338,7 +357,7 @@ func send_input(p: Dictionary) -> Dictionary:
 		elif item.event is InputEventMouseMotion:
 			item.event.button_mask = held_mouse_buttons
 		injections.append({"index": injections.size(), "at_ms": item.at_ms, "injected_at_usec": Time.get_ticks_usec(), "frame": Engine.get_process_frames()})
-		Input.parse_input_event(item.event)
+		inject_event(item.event)
 		if item.payload.has("pressed"):
 			var key: String = event_key(item)
 			if item.event is InputEventMouseButton and mouse_button_bit(item.event.button_index) == 0:

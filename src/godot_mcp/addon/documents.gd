@@ -416,10 +416,11 @@ func last_save() -> Dictionary:
 func get_logs(p: Dictionary) -> Dictionary:
 	var result: Dictionary
 	if p.has("run_id"):
-		if p.run_id != host.runtime.run_id or not host.runtime.ready: return host.fail("STALE_RUN", "No matching runtime.")
-		result = await host.debugger.request("get_diagnostics", p)
+		if p.run_id != host.runtime.run_id: return host.fail("STALE_RUN", "No matching runtime log history.")
+		result = host.LogBuffer.read_journal(int(host.runtime.runtime_info.get("pid", 0)), int(p.get("since", 0)), int(p.get("limit", 200)), p.get("kinds", []))
 		result.run_id = p.run_id
 		result.origin = "runtime"
+		result.debugger = host.debugger.state()
 	else:
 		result = host.logs.read(int(p.get("since", 0)), int(p.get("limit", 200)), p.get("kinds", []))
 		result.origin = "editor"

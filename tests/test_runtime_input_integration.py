@@ -35,7 +35,7 @@ func _initialize() -> void:
     root.add_child(helper)
     root.add_child(observer)
     await process_frame
-    var capture := {"rect": Rect2i(0, 0, 200, 100), "size": Vector2i(100, 50), "original": Vector2i(200, 100), "viewport": Vector2(200, 100)}
+    var capture := {"mapping": Transform2D(Vector2(2, 0), Vector2(0, 2), Vector2.ZERO), "viewport": root.get_viewport().get_visible_rect().size, "input_transform": root.get_viewport().get_final_transform()}
     helper.captures["godot://capture"] = capture
     var event: Dictionary = helper.make_event({"event": {"mouse_motion": {"position": {"x": 10, "y": 10}, "relative": {"x": 5, "y": 10}}}}, "godot://capture")
     print("CAPTURE_POSITION=" + str(event.event.position))
@@ -83,6 +83,9 @@ class Receiver extends Node:
     var drag_relatives: Array[Vector2] = []
     var buttons: Array[int] = []
     var button_masks: Array[int] = []
+    var key_presses: Array[bool] = []
+    var action_presses: Array[bool] = []
+    var touch_presses: Array[bool] = []
     func _input(event: InputEvent) -> void:
         if event is InputEventMouseMotion:
             masks.append(event.button_mask)
@@ -95,6 +98,12 @@ class Receiver extends Node:
         elif event is InputEventScreenDrag:
             drags.append(event.position)
             drag_relatives.append(event.relative)
+        elif event is InputEventKey:
+            key_presses.append(event.pressed)
+        elif event is InputEventAction:
+            action_presses.append(event.pressed)
+        elif event is InputEventScreenTouch:
+            touch_presses.append(event.pressed)
 
 func _initialize() -> void:
     var helper := Runtime.new()
@@ -103,7 +112,7 @@ func _initialize() -> void:
     root.add_child(helper)
     root.add_child(receiver)
     await process_frame
-    var capture := {"rect": Rect2i(10, 20, 100, 50), "size": Vector2i(100, 50), "original": Vector2i(200, 100), "viewport": Vector2(400, 300)}
+    var capture := {"mapping": Transform2D(Vector2(2, 0), Vector2(0, 3), Vector2(20, 60)), "viewport": root.get_viewport().get_visible_rect().size, "input_transform": root.get_viewport().get_final_transform()}
     helper.captures["godot://capture"] = capture
     var batch := await helper.send_input({"capture_uri": "godot://capture",
         "observe": [{"node": {"path": "/root/Receiver"}, "properties": ["masks", "missing"]}],
@@ -142,10 +151,31 @@ func _initialize() -> void:
     assert(receiver.masks[-1] == 0)
     var wheel := await helper.send_input({"events": [{"event": {"mouse_button": {"button": "wheel_up", "pressed": true}}}]})
     assert(wheel.held_inputs == 0)
-    var auto_release := await helper.send_input({"events": [{"event": {"mouse_button": {"button": "right", "pressed": true}}}], "release_after": true})
+    InputMap.add_action("release_action")
+    receiver.key_presses.clear()
+    receiver.action_presses.clear()
+    receiver.touch_presses.clear()
+    var auto_release := await helper.send_input({"events": [
+        {"event": {"key": {"key": "Space", "pressed": true}}},
+        {"event": {"action": {"action": "release_action", "pressed": true}}},
+        {"event": {"touch": {"index": 7, "position": {"x": 1, "y": 2}, "pressed": true}}}
+    ], "release_after": true})
     assert(auto_release.held_inputs == 0)
+    assert(receiver.key_presses == [true, false] and receiver.action_presses == [true, false] and receiver.touch_presses == [true, false])
+    assert(Input.is_key_pressed(KEY_SPACE) == false and Input.is_action_pressed("release_action") == false)
     var drag := await helper.send_input({"capture_uri": "godot://capture", "events": [{"event": {"drag": {"position": {"x": 50, "y": 25}, "relative": {"x": 5, "y": 4}, "pressed": true}}}]})
     assert(drag.processed == 1 and receiver.drags[-1] == Vector2(120, 135) and receiver.drag_relatives[-1] == Vector2(10, 12))
+
+    root.size = Vector2i(1280, 800)
+    root.content_scale_size = Vector2i(1440, 900)
+    root.content_scale_mode = Window.CONTENT_SCALE_MODE_CANVAS_ITEMS
+    await process_frame
+    await process_frame
+    var before_stale := receiver.motions.size()
+    var stale := await helper.send_input({"capture_uri": "godot://capture", "events": [{"event": {"mouse_motion": {"position": {"x": 50, "y": 25}, "relative": {"x": 5, "y": 4}}}}]})
+    assert(stale.error.code == "STALE_CAPTURE" and receiver.motions.size() == before_stale)
+    var stretched := await helper.send_input({"events": [{"event": {"mouse_motion": {"position": {"x": 720, "y": 450}, "relative": {"x": 0, "y": 0}}}}]})
+    assert(stretched.processed == 1 and receiver.motions[-1].is_equal_approx(Vector2(720, 450)))
     print("MASK_RELEASE_CAPTURE_OK")
     quit()
 '''

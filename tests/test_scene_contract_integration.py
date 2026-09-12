@@ -58,6 +58,40 @@ async def test_flat_create_and_get_scene_contract(editor):
         assert shallow.structured_content["truncated"]
         assert shallow.structured_content["depth_truncated"]
 
+        ui = await client.call_tool("create_nodes", {
+            "parent": {"scene": "res://main.tscn", "path": "."},
+            "nodes": [
+                {"key": "panel", "name": "Panel", "source": {"class": "Control"}, "layout": {"preset": "full_rect"}},
+                {"name": "Button", "parent_key": "panel", "source": {"class": "Button"},
+                 "properties": {"layout_mode": 1, "text": "Play"}, "layout": {"preset": "center", "minimum_size": {"x": 120, "y": 40}}},
+                {"name": "Mesh", "source": {"class": "MeshInstance3D"}, "properties": {
+                    "mesh": {"$type": "Resource", "class": "BoxMesh", "properties": {
+                        "material": {"$type": "Resource", "class": "StandardMaterial3D", "properties": {"roughness": 0.7}}}}}},
+            ],
+        })
+        assert not ui.is_error, ui
+        button = {"scene": "res://main.tscn", "path": "Panel/Button"}
+        changed = await client.call_tool("update_nodes", {"changes": [{"node": button, "set": {"text": "Go"}}]})
+        receipt = changed.structured_content["nodes"][0]
+        assert receipt == {"ref": button, "properties": {"text": "Go"}}
+        assert "affected_references" not in changed.structured_content
+        saved = await client.call_tool("create_resource", {"class": "StandardMaterial3D", "save_as": "res://saved.tres"})
+        assert not saved.is_error and saved.structured_content["resource"]["uri"] == "res://saved.tres"
+        inspected = await client.call_tool("get_resource", {"target": {"uri": "res://saved.tres"}, "properties": ["roughness"]})
+        assert not inspected.is_error
+        invalid = await client.call_tool("create_nodes", {
+            "parent": {"scene": "res://main.tscn", "path": "."},
+            "nodes": [{"name": "Valid", "source": {"class": "Node"}}, {"name": "Bad/Name", "source": {"class": "Node"}}],
+        })
+        assert error_code(invalid) == "INVALID_NAME"
+        assert invalid.structured_content["error"]["details"]["index"] == 1
+        assert invalid.structured_content["error"]["details"]["name"] == "Bad/Name"
+        invalid_property = await client.call_tool("create_nodes", {
+            "parent": {"scene": "res://main.tscn", "path": "."},
+            "nodes": [{"name": "Broken", "source": {"class": "Control"}, "properties": {"nonexistent": 42}}],
+        })
+        assert invalid_property.structured_content["error"]["details"]["field"] == "nodes[0].properties.nonexistent"
+
         for nodes, code, name in [
             ([{"name": "MissingParent", "parent_key": "absent", "source": {"class": "Node2D"}}], "UNKNOWN_PARENT_KEY", "MissingParent"),
             ([{"key": "same", "name": "DuplicateA", "source": {"class": "Node2D"}},

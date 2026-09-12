@@ -4,7 +4,7 @@ Build components that remain editable, previewable, and reusable in Godot. Follo
 
 ## Scenes, scripts, and composition
 
-Saved scenes composed of Godot nodes are the baseline for game-specific components that people need to edit. A scene stores a node hierarchy and configured properties, so a character, room, projectile, or reusable UI component can be inspected, laid out, previewed, and instanced in the editor. Instancing the same scene lets source changes flow to its instances, while per-instance overrides allow variation without copying the structure.
+Saved scenes composed of Godot nodes are the baseline for game-specific components that people need to edit. A scene stores a node hierarchy and configured properties, so a character, room, projectile, or reusable UI component can be inspected, laid out, previewed, and instanced in the editor. Keep editable components in saved scenes, but do not require a separate scene or resource for every small decoration: begin with nodes and embedded resources in one scene, then split when reuse or independent editing creates a real boundary. Instancing the same scene lets source changes flow to its instances, while per-instance overrides allow variation without copying the structure.
 
 Scripts implement behavior and expose adjustable values through exported properties. Runtime code should instantiate authored component scenes and configure them from data or gameplay. Runtime generation is appropriate for structure that is inherently determined during play, such as a dungeon generated from a seed or inventory rows built from current items. It should not replace authored composition when the component's nodes, layout, or presentation need editor control.
 
@@ -16,7 +16,7 @@ With MCP, `create_scene` creates an authored scene, `create_nodes` can instantia
 
 ## Resources and editable data
 
-Resources hold data and can be saved separately or embedded in a scene. They suit reusable materials, animation libraries, shapes, and configuration that benefits from Inspector editing. Exported script properties make relevant values editable and persistable without changing source for each adjustment.
+Resources hold data and can be saved separately or embedded in a scene. They suit reusable materials, animation libraries, shapes, and configuration that benefits from Inspector editing. Keep small, scene-specific values embedded; save a resource separately when it is reused or needs independent editing. Exported script properties make relevant values editable and persistable without changing source for each adjustment.
 
 Shared resources make common changes propagate to their users. Separate copies fit values that should diverge. This is a scope decision: changing a shared material's color can affect several objects. Mutable per-instance state, such as a particular enemy's current health, needs an ownership model appropriate to that instance even if its default stats are shared.
 
@@ -63,4 +63,4 @@ Organizing related scenes, scripts, and assets together can make a feature easy 
 
 ## Handoff
 
-When completing a change, identify the saved scenes that are now editable and the Inspector properties that control their behavior, layout, or appearance. If a component remains runtime-only, state what cannot be selected, arranged, or previewed before running and what additional authoring support would be needed. Use the results of the work already performed; this is not a request for extra inspection calls or a new validation pass.
+When completing a change, report the run or play result and any unresolved issue relevant to the requested scope. When editing guidance is requested or needed, identify the saved scenes that are editable and the Inspector properties that control their behavior, layout, or appearance. If a component remains runtime-only and that limitation matters to the handoff, state what cannot be selected, arranged, or previewed before running and what additional authoring support would be needed. Use the results of the work already performed; this is not a request for extra inspection calls or a new validation pass.

@@ -20,10 +20,10 @@ Expand these paths to absolute paths in client configuration. On Linux/macOS, us
 To start a new project, or prepare an empty directory, call `create_project` with its required absolute path. The optional `name` defaults to the directory name; `editor` defaults to `GODOT`, then `godot` or `godot4` on `PATH`:
 
 ```json
-{"project":"/absolute/path/to/new-game","name":"New Game"}
+{"project":"/absolute/path/to/new-game"}
 ```
 
-This creates `project.godot`, reuses the bundled plugin installer, launches the editor, and waits up to 15 seconds for the MCP handshake. The result reports `project_created`, `plugin_installed`, `editor_started`, and `connected`; a partial result includes failures and can be retried. Retries resume the recorded setup, preserve existing project settings, and do not launch another editor while the recorded process is alive. Use `install_plugin` for an unrelated existing project.
+This creates `project.godot`, reuses the bundled plugin installer, launches the editor, and waits up to 15 seconds for the MCP handshake. The optional `environment` is a whitelist of `DISPLAY`, `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`, `XAUTHORITY`, and `DBUS_SESSION_BUS_ADDRESS`. If omitted, the launcher inherits the display environment when available, or discovers it from a same-user ancestor or user-manager environment on Linux; it does not guess a display. The result reports `project_created`, `plugin_installed`, `editor_started`, and `connected`; a partial result includes failures and can be retried. Retries resume the recorded setup, preserve existing project settings, and do not launch another editor while the recorded process is alive. Use `install_plugin` for an unrelated existing project.
 
 The server and the project's editor plugin are separate parts. With the project closed in Godot, install its plugin through `install_plugin`:
 

@@ -49,13 +49,14 @@ def _state_summary(result: dict) -> dict:
                         if phases.get(key) not in (None, "completed", "not_requested")]
     if saved and unfinished_saves:
         save_state += " recorded; " + states(unfinished_saves, "pending")
-    return {
+    summary = {
         "applied": "staged" if phases.get("source") == "staged" else f"{len(changed)}/{len(changed)}" if changed else "not_requested",
         "saved": save_state,
         "editor_reload": states(reloads, "not_requested"),
         "diagnostics": states(validations, "not_requested"),
         "runtime": "unverified",
     }
+    return {key: value for key, value in summary.items() if value not in {"not_requested", "unverified", "not_attempted"}}
 
 
 def project_result(name: str, result: Any) -> Any:
@@ -96,7 +97,9 @@ def result_summary(name: str, result: dict) -> str:
     """Readable text without a second serialized copy of the structured payload."""
     if "error" in result:
         error = result["error"]
-        return f"{error.get('code', 'ERROR')}: {error.get('message', 'Request failed.')}"
+        details = error.get("details", {})
+        location = f" at {details['field']} ({details.get('name', '')})" if details.get("field") else ""
+        return f"{error.get('code', 'ERROR')}{location}: {error.get('message', 'Request failed.')}"
     operation = result if name == "get_operation_result" else None
     if operation is not None:
         result = operation.get("result", {})
@@ -104,7 +107,7 @@ def result_summary(name: str, result: dict) -> str:
     if operation is not None and operation.get("pending") is True:
         status = "pending"
     summary = f"{name}: {status}."
-    if "state_summary" in result:
+    if result.get("state_summary"):
         labels = {"applied": "Applied", "saved": "Saved", "editor_reload": "Editor reload",
                   "diagnostics": "Diagnostics", "runtime": "Runtime"}
         summary += " " + " · ".join(f"{labels[key]}: {value}" for key, value in result["state_summary"].items()) + "."

@@ -57,6 +57,8 @@ The client starts the server with the stable launcher's absolute path and the `c
 
 ### 3. Set up a project
 
+For a new project, ask your agent to use `create_project` with an absolute directory. It creates the project, installs the plugin, launches Godot, and connects.
+
 Close an existing project in Godot and ask your agent to install its plugin with `install_plugin`, providing the project's absolute directory. Then open the project in Godot. The agent can use `get_context` to inspect it or select among several open projects.
 
 You can also run `godot-mcp init` from the project folder. For updates, close linked Godot projects, rerun the installer, and reconnect MCP.

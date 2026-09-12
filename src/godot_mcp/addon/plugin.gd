@@ -429,7 +429,9 @@ func dirty_resources() -> Array:
 	var values: Array = []
 	for uri: String in resources:
 		if documents.resource_storage(resources[uri]) != "imported" and EditorInterface.is_object_edited(resources[uri]):
-			values.append(uri)
+			var canonical: String = resources[uri].resource_path
+			if not canonical.begins_with("res://"): canonical = uri
+			if canonical not in values: values.append(canonical)
 	return values
 
 func property_info(object: Object, property: String) -> Dictionary:
