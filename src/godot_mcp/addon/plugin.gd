@@ -8,6 +8,7 @@ const PropertyEdits = preload("res://addons/godot_mcp/property_edits.gd")
 const OperationRecords = preload("res://addons/godot_mcp/operation_records.gd")
 const LogBuffer = preload("res://addons/godot_mcp/log_buffer.gd")
 const SceneAccess = preload("res://addons/godot_mcp/scene_access.gd")
+const EditorUndo = preload("res://addons/godot_mcp/editor_undo.gd")
 const Scenes = preload("res://addons/godot_mcp/scenes.gd")
 const Documents = preload("res://addons/godot_mcp/documents.gd")
 const Resources = preload("res://addons/godot_mcp/resources.gd")
@@ -26,6 +27,7 @@ var busy: bool = false:
 		if not value: active_request.clear()
 var active_request: Dictionary = {}
 var scene_access: RefCounted
+var editor_undo: RefCounted
 var main_screen: String = ""
 var enabled: bool = false
 var added_autoload: bool = false
@@ -57,6 +59,7 @@ func _enter_tree() -> void:
 	logs = LogBuffer.new()
 	OS.add_logger(logs)
 	scene_access = SceneAccess.new(self)
+	editor_undo = EditorUndo.new(self)
 	main_screen_changed.connect(func(screen: String) -> void: main_screen = screen)
 	documents = Documents.new(self)
 	resource_targets = ResourceTarget.new(self)
@@ -107,6 +110,7 @@ func _enter_tree() -> void:
 
 func _exit_tree() -> void:
 	set_process(false)
+	if editor_undo: editor_undo.shutdown()
 	if documents:
 		documents.operations.shutdown()
 		documents.diagnostics.shutdown()
@@ -434,10 +438,8 @@ func property_error(object: Object, values: Dictionary) -> String:
 
 func begin_edit(label: String, context_object: Object) -> void:
 	get_undo_redo().create_action("MCP: " + label, UndoRedo.MERGE_DISABLE, context_object)
-	var history_id: int = get_undo_redo().get_object_history_id(context_object)
-	var history := get_undo_redo().get_history_undo_redo(history_id)
 	edit_parent = {"id": null}
-	if history and not edits.is_empty() and edits.back().history_id == history_id and edits.back().history_version == history.get_version(): edit_parent.id = edits.back().edit_id
+	if not edits.is_empty() and editor_undo.matches(edits.back()): edit_parent.id = edits.back().edit_id
 
 func add_changes(changes: Array) -> void:
 	for change: Dictionary in changes:
@@ -455,6 +457,7 @@ func finish_edit(context_object: Object, label: String, guards: Array = [], exec
 	var history := get_undo_redo().get_history_undo_redo(history_id)
 	var edit: Dictionary = {"edit_id": "edit-" + epoch + "-" + str(Time.get_ticks_usec()), "history_id": history_id, "history_version": history.get_version(), "label": label, "guards": guards, "parent_edit_id": edit_parent.get("id")}
 	edit.scene = node_ref(context_object).scene if context_object is Node else ""
+	edit.editor_revision = editor_undo.revision
 	edits.append(edit)
 	edit_parent = {}
 	if edits.size() > 100: edits.pop_front()
@@ -470,6 +473,7 @@ func _undo_error(edit_id: Variant) -> Dictionary:
 	if edits.is_empty(): return fail("NO_EDIT", "No recorded MCP edit to undo.")
 	var edit: Dictionary = edits.back()
 	if edit.edit_id != edit_id: return fail("STALE_EDIT", "Only the most recent MCP edit is eligible for undo.")
+	if not editor_undo.matches(edit): return fail("EDIT_CONFLICT", "Another editor action changed the native Undo order.")
 	var history := get_undo_redo().get_history_undo_redo(edit.history_id)
 	if not history or history.get_version() != edit.history_version:
 		return fail("EDIT_CONFLICT", "Editor history changed after this MCP edit.")
@@ -488,12 +492,16 @@ func undo_edit(p: Dictionary) -> Dictionary:
 		await scene_access.leave(previous)
 		return error
 	var history := get_undo_redo().get_history_undo_redo(edit.history_id)
-	history.undo()
+	var applied: Dictionary = editor_undo.undo(edit)
+	if applied.has("error"):
+		await scene_access.leave(previous)
+		return applied
 	edits.pop_back()
 	# Only a proven direct MCP predecessor may follow the version change from
 	# undoing this action. Never retag across an intervening user edit.
-	if not edits.is_empty() and edit.get("parent_edit_id") == edits.back().edit_id and edits.back().history_id == edit.history_id:
-		edits.back().history_version = history.get_version()
+	if not edits.is_empty() and edit.get("parent_edit_id") == edits.back().edit_id:
+		edits.back().editor_revision = editor_undo.revision
+		if edits.back().history_id == edit.history_id: edits.back().history_version = history.get_version()
 	if edit.has("undo_result"):
 		var result: Dictionary = edit.undo_result.call()
 		result.undo_of = edit.edit_id

@@ -186,7 +186,9 @@ func start(p: Dictionary) -> Dictionary:
 		undo.add_undo_method(documents.store, "restore_source", plan.uri, plan.before)
 		revisions[plan.uri] = str(plan.source).sha256_text()
 		guards.append({"check": documents.store.source_matches.bind(plan.uri, revisions[plan.uri])})
+	documents.store.staging = p.get("save", false)
 	var edit: Dictionary = host.finish_edit(context, "Edit source documents", guards)
+	documents.store.staging = false
 	var result: Dictionary = DocumentResult.begin({"edit_id": edit.edit_id, "scope": ["live_sources"], "retained_files": [], "steps": [{"edit_id": edit.edit_id, "scope": "live_sources"}], "note": "Undo steps run newest first and preserve saved disk files; user changes can make a step unavailable."})
 	result.operation_id = reservation.operation_id
 	result.attachments = []
@@ -196,6 +198,12 @@ func start(p: Dictionary) -> Dictionary:
 	var job: Dictionary = {"id": reservation.operation_id, "plans": plans, "revisions": revisions, "applied_revisions": revisions.duplicate(), "bindings": captured.bindings, "save": p.get("save", false), "result": result, "validation": {}, "reload": {}, "saves": {}, "running": true, "reload_mode": p.get("reload", "auto"), "phase": "save_sources" if p.get("save", false) else "validation", "attempts": []}
 	jobs[job.id] = job
 	_publish(job, true)
+	# Retain the receipt first, then finish source persistence under this request's
+	# existing gate. No frame or deferred continuation exposes half of the bundle.
+	if job.save:
+		if not await _save(job, job.revisions.keys(), "save_sources", true): return job.result.duplicate(true)
+		job.phase = "validation"
+		_publish(job, true)
 	_advance.call_deferred(job.id)
 	return result.duplicate(true)
 
@@ -241,6 +249,7 @@ func resume(p: Dictionary) -> Dictionary:
 	return job.result.duplicate(true)
 
 func _refresh(job: Dictionary) -> void:
+	job.result.phases.source = "staged" if documents.store.has_pending_sources(job.revisions.keys()) else "applied"
 	job.result.runtime = host.runtime.source_state(job.revisions.keys())
 	var records: Array = []
 	for plan: Dictionary in job.plans:
@@ -287,15 +296,16 @@ func _gate(job: Dictionary) -> bool:
 	host.enter_busy("apply_script_changes", job.id, job.phase)
 	return true
 
-func _save(job: Dictionary, uris: Array, phase: String) -> bool:
-	if not await _gate(job): return false
+func _save(job: Dictionary, uris: Array, phase: String, owns_gate: bool = false) -> bool:
+	if not owns_gate and not await _gate(job): return false
+	if owns_gate: host.active_request.phase = phase
 	var guard: Dictionary = _guard_sources(job)
 	if not guard.is_empty():
-		host.busy = false
+		if not owns_gate: host.busy = false
 		_pause(job, phase, guard)
 		return false
 	var result: Dictionary = await documents.save_documents({"uris": uris})
-	host.busy = false
+	if not owns_gate: host.busy = false
 	if result.has("error"):
 		_pause(job, phase, result)
 		return false

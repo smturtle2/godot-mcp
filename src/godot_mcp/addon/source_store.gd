@@ -6,6 +6,7 @@ var states: Dictionary = {}
 var buffers: Dictionary = {}
 var observing: bool = false
 var writing: bool = false
+var staging: bool = false
 var stopped: bool = false
 const MAX_BASE_VERSIONS := 256
 const MAX_BASE_BYTES := 16 * 1024 * 1024
@@ -158,6 +159,7 @@ func _buffer_changed(uri: String) -> void:
 	if not buffer: return
 	_record_buffer_version(uri, buffer)
 	if writing or not states.has(uri): return
+	states[uri].pending_publication = false
 	states[uri].source = buffer.text
 	states[uri].origin = "editor"
 	states[uri].dirty = not states[uri].base_known or buffer.text.sha256_text() != states[uri].base_disk_revision
@@ -180,7 +182,10 @@ func source_info(uri: String) -> Dictionary:
 	var buffer: TextEdit = script_buffer(uri) if uri.ends_with(".gd") else null
 	var resource: Resource = host.resource_uri(uri)
 	var origin: String = "disk"
-	if buffer:
+	if states.get(uri, {}).get("pending_publication", false):
+		source = str(states[uri].source)
+		origin = "store"
+	elif buffer:
 		source = buffer.text
 		origin = "editor"
 	elif states.has(uri) and states[uri].get("dirty", false):
@@ -213,6 +218,13 @@ func set_source(uri: String, source: String, resource: Resource = null) -> void:
 	if resource:
 		resource.resource_path = uri
 		host.register_resource(resource)
+	if staging:
+		states[uri].source = source
+		states[uri].dirty = not disk.exists or source != disk.source
+		states[uri].origin = "store"
+		states[uri].pending_publication = true
+		return
+	states[uri].pending_publication = false
 	var buffer: TextEdit = script_buffer(uri) if resource is Script else null
 	writing = true
 	if resource is Script:
@@ -234,6 +246,23 @@ func set_source(uri: String, source: String, resource: Resource = null) -> void:
 		state.base_disk_revision = disk.revision
 	if buffer: _record_buffer_version(uri, buffer)
 	if resource: EditorInterface.set_object_edited(resource, state.dirty)
+
+func publish_sources(uris: Array) -> void:
+	var pending: Dictionary = {}
+	for uri: String in uris:
+		var info: Dictionary = source_info(uri)
+		if info.has("error"): continue
+		pending[uri] = info.source
+	for uri: String in pending:
+		var resource: Resource = host.resources.get(uri)
+		# Populate every GDScript before a buffer notification can parse a peer.
+		if resource is Script: resource.source_code = pending[uri]
+	for uri: String in pending: set_source(uri, pending[uri], host.resources.get(uri))
+
+func has_pending_sources(uris: Array) -> bool:
+	for uri: String in uris:
+		if states.get(uri, {}).get("pending_publication", false): return true
+	return false
 
 func source_matches(uri: String, revision: String) -> bool:
 	var info: Dictionary = source_info(uri)

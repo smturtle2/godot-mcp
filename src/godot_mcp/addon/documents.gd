@@ -31,7 +31,7 @@ func dispatch(method: String, p: Dictionary) -> Dictionary:
 		"find_assets": return find_assets(p)
 		"read_scripts": return read_scripts(p)
 		"_source_snapshot": return source_snapshot(p)
-		"_apply_source_plan": return operations.start(p)
+		"_apply_source_plan": return await operations.start(p)
 		"resume_script_changes": return operations.resume(p)
 		"save_documents": return await save_documents(p)
 		"update_signals": return update_signals(p)
@@ -184,6 +184,47 @@ func save_plan(uris: Array) -> Dictionary:
 	additional.sort()
 	return {"uris": uris.duplicate(), "additional_uris": additional, "scope": "requested documents and observed edited external resources persisted by Godot scene saves"}
 
+func _write_source(target: String, source: String) -> Error:
+	# GDScript and shader format savers write plain text. Doing that here avoids
+	# ResourceSaver's editor callback until every source in the bundle exists.
+	var error: Error = DirAccess.make_dir_recursive_absolute(target.get_base_dir())
+	if error != OK: return error
+	var temporary: String = target.get_base_dir().path_join("." + target.get_file() + ".mcp-" + host.epoch + "-" + str(Time.get_ticks_usec()))
+	var file := FileAccess.open(temporary, FileAccess.WRITE)
+	if not file: return FileAccess.get_open_error()
+	file.store_string(source)
+	file.flush()
+	error = file.get_error()
+	file.close()
+	if error == OK and FileAccess.file_exists(target):
+		var permissions: int = FileAccess.get_unix_permissions(target)
+		if permissions >= 0: FileAccess.set_unix_permissions(temporary, permissions)
+	if error == OK: error = DirAccess.rename_absolute(temporary, target)
+	if error != OK: DirAccess.remove_absolute(temporary)
+	return error
+
+func _publish_saved_sources(uris: Array, saved: Array) -> void:
+	var current: Array = uris.duplicate()
+	for item: Dictionary in saved:
+		if item.uri not in uris or item.uri == item.saved_as: continue
+		var resource: Resource = host.resource_uri(item.uri)
+		if resource:
+			resource.take_over_path(item.saved_as)
+			host.resources.erase(item.uri)
+			host.register_resource(resource)
+		store.move_state(item.uri, item.saved_as)
+		current[current.find(item.uri)] = item.saved_as
+	# Failed saves still leave the requested edits available as unsaved sources.
+	# They are published only after the complete write attempt, never between files.
+	store.publish_sources(current)
+	for item: Dictionary in saved:
+		if item.uri not in uris: continue
+		store.mark_saved(item.saved_as)
+	# The native filesystem owner retains/creates UID sidecars and updates its
+	# class registry. All source bytes and live scripts are now available to it.
+	for item: Dictionary in saved:
+		if item.uri in uris: EditorInterface.get_resource_filesystem().update_file(item.saved_as)
+
 func save_documents(p: Dictionary) -> Dictionary:
 	var plan: Dictionary = save_plan(p.get("uris", []))
 	if not plan.additional_uris.is_empty():
@@ -198,9 +239,25 @@ func save_documents(p: Dictionary) -> Dictionary:
 	var receipt: Dictionary = {"editor_epoch": host.epoch, "request_id": host.active_request.get("request_id"), "operation_id": host.active_request.get("operation_id"), "state": "pending", "phase": "preparing", "documents": [], "recorded_at": Time.get_datetime_string_from_system(true)}
 	for uri: String in p.get("uris", []): receipt.documents.append({"uri": uri, "target": p.get("save_as", {}).get(uri, uri), "state": "not_attempted"})
 	_write_save_receipt(receipt)
-	var request_index: int = -1
-	for uri: String in p.get("uris", []):
-		request_index += 1
+	var source_uris: Array = []
+	var source_indices: Array = []
+	var other_indices: Array = []
+	for index: int in p.get("uris", []).size():
+		if str(p.uris[index]).get_extension() in ["gd", "gdshader"]:
+			source_uris.append(p.uris[index])
+			source_indices.append(index)
+		else: other_indices.append(index)
+	var sources_published: bool = false
+	var source_failed: bool = false
+	for request_index: int in source_indices + other_indices:
+		var uri: String = p.uris[request_index]
+		if request_index in other_indices and not sources_published:
+			source_failed = not failed.is_empty()
+			_publish_saved_sources(source_uris, saved)
+			sources_published = true
+		if source_failed:
+			failed.append({"uri": uri, "index": request_index, "code": "SOURCE_SAVE_FAILED", "error": "A source in this save bundle failed; dependent document saves were not attempted."})
+			continue
 		receipt.phase = "saving"
 		receipt.documents[request_index].state = "outcome_unknown"
 		_write_save_receipt(receipt)
@@ -240,23 +297,7 @@ func save_documents(p: Dictionary) -> Dictionary:
 			if info.has("error") or info.get("external_change", false):
 				failed.append({"uri": uri, "index": request_index, "code": str(info.error.get("code", "FILE_NOT_FOUND")) if info.has("error") else "EXTERNAL_CHANGE", "error": "Source is missing or disk changes conflict with unsaved edits.", "conflicts": store.conflicts([uri])})
 				continue
-			var resource: Resource = host.resource_uri(uri)
-			if resource is Script: resource.source_code = info.source
-			elif resource is Shader: resource.code = info.source
-			if resource:
-				DirAccess.make_dir_recursive_absolute(target.get_base_dir())
-				error = ResourceSaver.save(resource, target, ResourceSaver.FLAG_CHANGE_PATH)
-				if error == OK:
-					var buffer: TextEdit = script_buffer(uri)
-					if buffer: buffer.tag_saved_version()
-					if target != uri:
-						resource.take_over_path(target)
-						host.resources.erase(uri)
-						host.register_resource(resource)
-						store.move_state(uri, target)
-					store.mark_saved(target)
-					EditorInterface.set_object_edited(resource, false)
-			else: error = ERR_FILE_UNRECOGNIZED
+			error = _write_source(target, info.source) if target.get_extension() == uri.get_extension() else ERR_INVALID_PARAMETER
 		else:
 			var resource: Resource = host.resource_uri(uri)
 			if not resource: error = ERR_FILE_NOT_FOUND
@@ -272,11 +313,12 @@ func save_documents(p: Dictionary) -> Dictionary:
 			receipt.documents[request_index].state = "saved"
 			receipt.documents[request_index].disk_revision = FileAccess.get_sha256(target)
 			_write_save_receipt(receipt)
-			EditorInterface.get_resource_filesystem().update_file(target)
+			if uri not in source_uris: EditorInterface.get_resource_filesystem().update_file(target)
 		else:
 			failed.append({"uri": uri, "index": request_index, "code": "SAVE_FAILED", "error": error_string(error)})
+	if not sources_published: _publish_saved_sources(source_uris, saved)
 	for failure: Dictionary in failed:
-		receipt.documents[int(failure.index)].state = "failed"
+		receipt.documents[int(failure.index)].state = "not_attempted" if failure.code == "SOURCE_SAVE_FAILED" else "failed"
 		receipt.documents[int(failure.index)].error = failure
 	receipt.state = "completed" if failed.is_empty() else "partial" if not saved.is_empty() else "failed"
 	receipt.phase = "finished"

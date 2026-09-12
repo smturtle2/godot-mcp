@@ -1,3 +1,8 @@
+# v4.7.2_15
+
+- Execute MCP Undo through the native editor command, keeping its action stacks aligned and preserving newer user actions.
+- Finish source bundle writes before publishing live buffers and filesystem updates, avoiding reads of missing peer scripts during a successful save. Preserve unsaved edits and per-file outcomes on failure, and stop dependent saves.
+
 # v4.7.2_14
 
 - Reacquire scene objects after activation, report the observed active scene, and perform inactive-scene edits and Undo in their owning scene. Resolve custom resource compatibility through script identity and inheritance.
