@@ -1,3 +1,9 @@
+# v4.7.2_18
+
+- Add `get_guide`, a bundled English manual available before connecting a Godot editor. Its optional `section` selects `start`, `development`, `model`, `work`, `recovery`, or `tools`; omission returns the index.
+- Direct server instructions to the manual and consolidate setup, usage, state, and recovery explanations. Generate the tool reference from the installed catalog.
+- Explain Godot development choices and tradeoffs without prescribing game style or project architecture. Return guide text once, without operation receipts or duplicated structured content.
+
 # v4.7.2_17
 
 - Summarize operation queries using the tracked operation's pending flag and result status, so a successful status lookup does not imply that the underlying work has completed.

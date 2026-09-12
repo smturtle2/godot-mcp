@@ -60,6 +60,29 @@ async def call_tool(server, name, arguments=None):
 
 
 @pytest.mark.asyncio
+async def test_guide_is_available_without_a_project_and_matches_published_sections(tmp_path):
+    async with Client(create_server(home=tmp_path / "empty-home")) as client:
+        tools = (await client.list_tools()).tools
+        guide = next(tool for tool in tools if tool.name == "get_guide")
+        assert set(guide.input_schema["properties"]) == {"section"}
+        sections = guide.input_schema["properties"]["section"]["enum"]
+        index = await client.call_tool("get_guide", {})
+        assert not index.is_error
+        for section in sections:
+            assert f"`{section}`" in index.content[0].text
+            result = await client.call_tool("get_guide", {"section": section})
+            assert not result.is_error
+            assert result.structured_content is None
+            assert len(result.content) == 1 and result.content[0].type == "text"
+            assert f"Section: {section}" in result.content[0].text
+        assert "`create_nodes`" in result.content[0].text
+        for arguments in ({"section": "development/ui"}, {"section": "../server.py"}, {"project": "/tmp/project"}):
+            result = await client.call_tool("get_guide", arguments)
+            assert result.is_error
+            assert result.structured_content["error"]["code"] == "INVALID_ARGUMENT"
+
+
+@pytest.mark.asyncio
 async def test_directory_filters_wrong_epoch_and_dead_pid(tmp_path, fake_directory):
     home = tmp_path / "home"
     good = tmp_path / "good"

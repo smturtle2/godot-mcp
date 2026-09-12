@@ -1,6 +1,8 @@
 """Executable tool contracts shared by the MCP server, tests, and docs generator."""
 from __future__ import annotations
 
+from .guide import GUIDE_SECTIONS
+
 
 def obj(properties: dict, required: tuple = (), **constraints) -> dict:
     return {"type": "object", "properties": properties, "required": list(required),
@@ -279,8 +281,8 @@ TS_CHANGE = choice({
 }, "Choose exactly one TileSet change operation.")
 
 
-def tool(name, description, properties, required=(), *, read=False, destructive=False, idempotent=False, constraints=None, output=None):
-    schema = obj({"project": PROJECT, **properties}, required, **(constraints or {}))
+def tool(name, description, properties, required=(), *, read=False, destructive=False, idempotent=False, constraints=None, output=None, project_bound=True):
+    schema = obj({**({"project": PROJECT} if project_bound else {}), **properties}, required, **(constraints or {}))
     result = {"name": name, "description": description, "inputSchema": schema,
             "annotations": {"readOnlyHint": read, "destructiveHint": destructive,
                             "idempotentHint": idempotent, "openWorldHint": False}}
@@ -290,6 +292,7 @@ def tool(name, description, properties, required=(), *, read=False, destructive=
 
 
 TOOL_SPECS = [
+    tool("get_guide", "Read the Godot MCP manual. Omit section to get the index; select a section to read its English content.", {"section": {**enum(*GUIDE_SECTIONS), "description": "Manual section to read. Omit to read the index."}}, read=True, idempotent=True, project_bound=False),
     tool("install_plugin", "Install and enable the bundled plugin in an existing Godot project before connecting to the editor. Close the project in Godot first. Creates a rollback backup and registers project discovery.", {"project": {**S, "description": "Required absolute path to the directory containing project.godot."}}, ("project",)),
     tool("get_context", "Read versions, active scene, selection, unsaved documents, pending operations, run state and durable deletion records for restore or purge. Use scope=progress for a compact operation status; set runtime_details=true to request fresh runtime source provenance.", {"scope": enum("all", "project", "editor", "runtime", "progress"), "runtime_details": B}, read=True),
     tool("get_operation_result", "Read retained results without repeating work; wait_ms optionally waits for running work. Snapshots preserve operation-time facts; current_undo/current_resume report live eligibility. The editor retains 64 results/16 MiB per session, evicting completed records first.", {"operation_id": S, "wait_ms": integer(0, 60000)}, ("operation_id",), read=True, output=OPERATION_DETAIL_OUTPUT),
@@ -348,4 +351,4 @@ TOOL_SPECS = [
 # Canonical input contracts and published tool schemas are the same definitions.
 DOCUMENT_TOOLS = {"apply_script_changes", "resume_script_changes", "save_documents"}
 SPECS = {spec["name"]: spec for spec in TOOL_SPECS}
-assert len(SPECS) == len(TOOL_SPECS) == 48
+assert len(SPECS) == len(TOOL_SPECS) == 49

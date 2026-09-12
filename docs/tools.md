@@ -1,13 +1,32 @@
-# Godot MCP tool reference
+Godot MCP v4.7.2_18 · Godot 4.7.2 · Section: tools
 
-Generated from [`TOOL_SPECS`](../src/godot_mcp/catalog.py). MCP `tools/list` publishes the named input schemas; strict server validation remains authoritative.
+# Choosing tools
 
-Document and import mutations return a compact receipt with an `operation_id`. Use `get_operation_result(operation_id)` for the retained operation-time snapshot and current Undo eligibility; never rerun a mutation to retrieve details. Records are bounded to 64 entries and 16 MiB of serialized result bytes.
+Choose the action that matches the task. The catalog below comes from the installed server's tool definitions. MCP publishes the complete input schemas alongside those definitions; use them for argument shapes. The `work` section contains examples, `model` explains common concepts, and `recovery` explains failed or incomplete operations.
 
-`install_plugin` can install and enable the project plugin before an editor connection exists. After opening the project, use `get_context` for live editor state.
+| Need | Tools and distinction |
+|---|---|
+| Learn or connect | `get_guide` reads this manual without an editor. `install_plugin` links a closed project. `get_context` discovers projects or inspects live state. |
+| Discover project contents | `find_assets` lists or searches files and drafts. `get_scene` inspects live nodes. `get_resource` reads resource properties. `get_class_info` inspects actual class members. |
+| Change scenes | `create_scene` creates a saved scene. `create_nodes` builds a related batch; `update_nodes` edits existing nodes; `delete_nodes` removes nodes. `open_scene` changes the editor's active scene. |
+| Edit source and bindings | `read_scripts` returns current text and revisions. `apply_script_changes` applies related source edits and optional bindings. `update_signals` changes connections without source edits. |
+| Change resources | `create_resource` creates an engine resource. `update_resource` edits an existing local or shared resource. `save_documents` persists authored documents. |
+| Continue or recover | `get_operation_result` observes retained work. `resume_script_changes` continues a blocked source bundle. `undo_edit` uses editor history; `restore_assets` restores durable deletion backups. |
+| Manage assets | `import_assets` copies/imports local data. `move_assets` reconciles paths. `delete_assets` previews/applies deletion; `purge_deleted_assets` permanently removes recovery backups. |
+| Author animation or tiles | Animation read, edit, graph, and preview tools serve different animation tasks. `get_tilemap`, `edit_tileset`, and `paint_tiles` inspect cells, configure tiles, and place them. |
+| Run and observe | `run_scene` and `stop_game` control a run. `inspect_runtime` reads live game nodes; `capture_viewport` returns pixels. `send_input` interacts with the game; `wait_for_condition` waits for an observation; `sample_performance` measures a bounded interval. |
+| Investigate a problem | `get_logs` reads historical events. `get_diagnostics` explicitly compiles a source snapshot. Debugger inspection, breakpoints, and control work with a suspended GDScript run. |
+| Configure and export | Settings tools read/edit project configuration. `get_export_presets` inspects preset/template readiness; `export_build` creates an artifact. |
+
+Successful operations may return an `operation_id` for retained details. Observing that ID does not repeat the original action. A source diagnostic verdict and an editor error log answer different questions; choose according to the problem being investigated.
+
+## Current tool catalog
+
+Argument schemas are published in MCP tools/list.
 
 | Tool | Description |
 |---|---|
+| `get_guide` | Read the Godot MCP manual. Omit section to get the index; select a section to read its English content. |
 | `install_plugin` | Install and enable the bundled plugin in an existing Godot project before connecting to the editor. Close the project in Godot first. Creates a rollback backup and registers project discovery. |
 | `get_context` | Read versions, active scene, selection, unsaved documents, pending operations, run state and durable deletion records for restore or purge. Use scope=progress for a compact operation status; set runtime_details=true to request fresh runtime source provenance. |
 | `get_operation_result` | Read retained results without repeating work; wait_ms optionally waits for running work. Snapshots preserve operation-time facts; current_undo/current_resume report live eligibility. The editor retains 64 results/16 MiB per session, evicting completed records first. |

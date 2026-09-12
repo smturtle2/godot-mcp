@@ -12,17 +12,16 @@ from mcp.server.stdio import stdio_server
 
 from .bridge import EditorBridge, ToolError, validate_values
 from .catalog import SPECS, TOOL_SPECS
+from .guide import read_guide
 from .input_validation import validate_arguments
 from .result_projection import project_result, result_summary
 from .source_tools import SourceTools
 from .version import PRODUCT_VERSION
 
 SERVER_INSTRUCTIONS = (
-    "For editor work, call get_context first; select an absolute project. Prefer MCP for live edits. "
-    "Use live refs and current run_id. Read sources with read_scripts, then apply_script_changes with its base_revisions. "
-    "Save explicitly before play. For pending work, query get_operation_result; never replay a mutation to wait. "
-    "After a timeout without an operation ID, inspect state before retrying. For direct edits, check unsaved state, then reload and validate. "
-    "Godot values use $type and named fields. Pass these rules to delegates."
+    "Godot MCP provides tools for developing games in the live Godot editor.\n"
+    "Use get_guide to learn this server's capabilities, usage, and Godot\n"
+    "development practices. Read the sections relevant to your task."
 )
 
 
@@ -80,6 +79,10 @@ def create_server(project: Path | None = None, bridge: EditorBridge | None = Non
                 raise ToolError("UNKNOWN_TOOL", f"Unknown tool: {params.name}")
             arguments = dict(params.arguments or {})
             validate_arguments(validators[params.name], arguments)
+            if params.name == "get_guide":
+                return types.CallToolResult(content=[types.TextContent(
+                    type="text", text=read_guide(arguments.get("section")),
+                )], is_error=False)
             if params.name == "install_plugin":
                 target = Path(arguments["project"])
                 if not target.is_absolute():

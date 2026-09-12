@@ -55,4 +55,4 @@ Preview and delete files or folders through MCP, recover them with Undo or `rest
 
 ## Reference
 
-[48 tools](docs/tools.md) · [State and recovery](docs/workflows.md) · [Setup and troubleshooting](docs/installation.md) · [Development](docs/development.md) · [EUPL-1.2](LICENSE)
+[49 tools](docs/tools.md) · [State and recovery](docs/workflows.md) · [Setup and troubleshooting](docs/installation.md) · [Development](docs/development.md) · [EUPL-1.2](LICENSE)
