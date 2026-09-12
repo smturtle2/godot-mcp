@@ -29,21 +29,23 @@ Apply all source edits with one `apply_script_changes` patch string. The patch u
 
 Use `*** Begin Patch`, `*** Add File: res://...` or `*** Update File: res://...`, `@@` context hunks, space/`-`/`+` hunk prefixes, and `*** End Patch`. Updated URIs require their returned values from `base_revisions`; an all-new patch may omit the map. Context is exact and has no whitespace fuzz. Retained bases permit a non-overlapping concurrent edit to merge. Overlapping or ambiguous edits are conflicts and make no source change. `preview: true` returns the guarded text plan and save scope without applying or validating it.
 
-`save` defaults to `false` for both Add and Update, leaving live editor changes as drafts. With `save: true`, source strings are staged briefly and the source write phase finishes before live buffers and native filesystem notifications are published; Godot still owns UID sidecars. Sources are persisted before validation, and binding owners are saved after successful binding work. Saved source remains on disk if a later validation phase fails. Source changes already applied remain available for repair after a compile or binding failure. `reload` defaults to `auto`; `reload:"defer"` saves as requested and pauses before explicit editor reload, returning resumable `RELOAD_DEFERRED`. Godot may auto-reload independently.
+`save` defaults to `false` for both Add and Update, leaving live editor changes as drafts. With `save: true`, source strings are staged briefly and the source write phase finishes before live buffers and native filesystem notifications are published; Godot still owns UID sidecars. The normal path applies the edit, saves sources when requested, reloads the editor, applies bindings, and saves binding owners when requested. Source validation is not part of this path; request `get_diagnostics` explicitly when a validation snapshot is needed. Saved source remains on disk if a later reload or binding phase fails. Source changes already applied remain available for repair after a reload or binding failure. `reload` defaults to `auto`; `reload:"defer"` saves as requested and pauses before explicit editor reload, returning resumable `RELOAD_DEFERRED`. Godot may auto-reload independently.
 
-One operation coordinates these phases, in order: `source`, `save_sources`, `validation`, `editor_reload`, `bindings`, and `save_bindings`. A `pending` response includes `operation_id`; call `get_operation_result` with that ID (and optional `wait_ms`) to wait for the same work without replaying it. The operation result reports per-document state, validation and save effects, failures with phase and recovery details, pending work, and Undo information.
+One operation coordinates these phases, in order: `source`, `save_sources`, `editor_reload`, `bindings`, and `save_bindings`. By default, `apply_script_changes` and `resume_script_changes` wait up to 15000 ms; diagnostics wait up to 1500 ms. A pending response includes `operation_id`; call `get_operation_result` with that ID (and optional `wait_ms`) to wait for the same work without replaying it. Work that remains pending continues automatically. The operation result reports per-document state, save effects, failures with phase and recovery details, pending work, and Undo information.
 
-`resume_script_changes` continues blocked or unfinished phases without replaying the patch or successful bindings. It preserves completed bindings. After repairing text, provide a current read revision for every original source in `revisions`; accepting repaired text without all original source revisions is rejected. Changes made to the targets while the operation was blocked still cause conflicts.
+Tool responses include a concise text summary and structured data. Normal completed receipts omit phase and runtime details; use `get_operation_result` for the retained detailed snapshot.
+
+`resume_script_changes` continues blocked or unfinished phases without replaying the patch, completed saves, or successful bindings. It preserves completed binding steps. After repairing text, provide a current read revision for every original source in `revisions`; accepting repaired text with new source revisions repeats only the required source save and editor reload. Changes made to the targets while the operation was blocked still cause conflicts.
 
 Source changes retain one Undo action plus binding steps in newest-first order. `undo_edit(edit_id)` invokes the native editor Undo command so the manager stacks stay consistent. It refuses when another native editor action has changed the Undo order, and removes an MCP edit only after the requested Undo is observed. Disk files are preserved. Saving a scene can include linked edited sources; if the scope is incomplete, the operation fails with `SAVE_SCOPE_REQUIRED` and reports the additional URIs to pass explicitly to `save_documents`.
 
-Script-only saves do not reopen the current scene. `save_documents` processes source files before dependent scene/resource saves. A failed source write prevents later dependent saves, leaves requested edits available as unsaved changes, and retains per-file outcomes. This ordering is not a filesystem-wide atomic transaction. `save_documents` retains its latest save receipt in `.godot-mcp/last-save.json`, exposed as `get_context.last_save` after an editor restart. An interrupted native save has an unknown outcome until its actual disk contents are inspected; connection loss never automatically replays a mutation. Deferred explicit reloads are a mitigation, not a guarantee against crashes in engine or tool-script code.
+Script-only saves do not reopen the current scene. `save_documents` processes source files before dependent scene/resource saves. Imported data is excluded from authored dirty-save and run requirements; use `save_as` to export an imported resource as an authored copy while leaving its source unchanged. A failed source write prevents later dependent saves, leaves requested edits available as unsaved changes, and retains per-file outcomes. This ordering is not a filesystem-wide atomic transaction. `save_documents` retains its latest save receipt in `.godot-mcp/last-save.json`, exposed as `get_context.last_save` after an editor restart. An interrupted native save has an unknown outcome until its actual disk contents are inspected; connection loss never automatically replays a mutation. Deferred explicit reloads are a mitigation, not a guarantee against crashes in engine or tool-script code.
 
 ## Scene access and editor errors
 
 `open_scene` reports the requested and actual active scene, with `opened` and `active` facts. Scene objects are reacquired after activation. Editing or undoing changes in another scene activates its owner first, then restores the previous scene and selection if the user has not navigated elsewhere.
 
-Mutation responses retain their actual effects and attach compact `editor_events` when editor errors or warnings occur during that request. Events include a cursor and a `get_logs` recovery call. Temporal association does not prove that the request caused an error; `get_diagnostics` instead checks current source validity.
+Mutation responses retain their actual effects and attach compact `editor_events` when editor errors or warnings occur during that request. Events include a cursor and a `get_logs` recovery call. Temporal association does not prove that the request caused an error; `get_diagnostics` instead checks a captured source snapshot.
 
 ## Resource targets
 
@@ -67,7 +69,7 @@ For mutation tools that require scope, use a local node property or shared resou
 {"target":{"shared":{"uri":"res://material.tres"}},"set":{"albedo":{"$type":"Color","r":1,"g":0.5,"b":0,"a":1}}}
 ```
 
-Read users and import provenance before choosing shared scope. Imported shared sources require detaching to an authored resource before mutation.
+Read users and import provenance before choosing shared scope. Imported shared sources require detaching to an authored resource before mutation. Source preparation reports `SCRIPT_NOT_READY` while a script is still loading or lacks its base type, and `SCRIPT_LOAD_FAILED` when Godot cannot load its current source; once prepared, an incompatible target reports `TYPE_MISMATCH`.
 
 ## Attachments and connections
 
@@ -77,7 +79,7 @@ Patch attachments are typed. A script attaches a source URI to a node; a shader 
 {"attachments":[{"script":{"uri":"res://player.gd","node":{"scene":"res://main.tscn","path":"Player"}}},{"shader":{"uri":"res://toon.gdshader","target":{"local":{"scene":"res://main.tscn","path":"Player","property":"material"}}}}],"connections":{"connect":[],"disconnect":[]}}
 ```
 
-`connections.connect` and `connections.disconnect` are arrays of signal records (`from`, `signal`, `to`, `method`, and optional `binds`). Binding and connection work is reported separately from source validation and follows the operation phases.
+`connections.connect` and `connections.disconnect` are arrays of signal records (`from`, `signal`, `to`, `method`, and optional `binds`). Binding and connection work is reported separately from diagnostics and follows the operation phases.
 
 ## Runtime input
 
@@ -115,7 +117,7 @@ When the editor is busy, the error includes `active_operation` with its tool, ph
 
 ## Asset listing
 
-Use `find_assets` with `{"mode":"list","scope":"res://"}` to list project files, directories and unsaved source drafts without a search term. Set `recursive:false` for immediate children. Listing does not load source bodies. Name, content and symbol searches use a nonempty substring query; `*` is not a wildcard. Dot paths and symlinks are excluded, and pagination and incomplete coverage are explicit.
+Use `find_assets` with `{"mode":"list","scope":"res://"}` to list project files, directories and unsaved source drafts without a search term. Set `recursive:false` for immediate children. Listing does not load source bodies. Name, content and symbol searches use a nonempty substring query; `*` is not a wildcard. When `types` contains comma-separated alternatives, any candidate match is accepted. Dot paths and symlinks are excluded, and pagination and incomplete coverage are explicit.
 
 ## Asset deletion and recovery
 
@@ -151,11 +153,11 @@ Reference discovery covers known resource dependencies, quoted path literals in 
 
 ## Diagnostics and runtime provenance
 
-`get_diagnostics` validates current sources, unsaved source dependencies, and live settings. It is separate from historical logs. It may return an `operation_id` when work exceeds `wait_ms`; use `get_operation_result` to wait without repeating validation. Its bounded fingerprint cache may report `cache="compiled"` or `cache="reused"`. Counts are complete only when all requested coverage is fresh; pending or unavailable sources do not establish an error-free result. Snapshots exclude dot caches and symlinks and are bounded to 20,000 files and 512 MiB.
+`get_diagnostics` explicitly validates a captured snapshot of sources, unsaved source dependencies, and live settings. Results describe that snapshot with `basis:"snapshot"`; they do not guarantee that the live project remains unchanged. It is separate from historical logs and may return an `operation_id` when work exceeds `wait_ms`; use `get_operation_result` to wait without repeating validation. Counts are complete only when the requested snapshot coverage is complete; pending or unavailable sources do not establish an error-free result. Snapshots exclude dot caches and symlinks and are bounded to 20,000 files and 512 MiB.
 
-`get_logs` reads historical editor or selected-run entries with `kinds`, `since`, `limit`, and optional `run_id`; editor errors are historical events. `get_diagnostics` validates current source diagnostics. Neither historical log silence nor occurrence alone establishes the current source verdict or resolves a runtime problem.
+`get_logs` reads historical editor or selected-run entries with `kinds`, `since`, `limit`, and optional `run_id`; editor errors are historical events. `get_diagnostics` validates captured source snapshots. Neither historical log silence nor occurrence alone establishes the current source verdict or resolves a runtime problem.
 
-`run_scene` accepts `save_uris`, optional `revisions`, and `restart`. `save_uris` explicitly lists documents to persist first; other unsaved documents block startup. Its startup source snapshot covers the launch scene, autoloads and declared dependencies, rather than every project file. These hashes do not prove executed behavior, and dynamically loaded assets are not exhaustively covered.
+`run_scene` accepts `save_uris`, optional `revisions`, and `restart`. `save_uris` explicitly lists documents to persist first; other unsaved authored documents block startup, while imported data is excluded from that requirement. Its startup source snapshot covers the launch scene, autoloads and declared dependencies, rather than every project file. These hashes do not prove executed behavior, and dynamically loaded assets are not exhaustively covered.
 
 Routine captures, input and runtime observations omit repeated source provenance. Request `get_context` with `scope:"runtime", runtime_details:true` for a fresh comparison. Unrelated added files do not by themselves require a restart. `restart_required:true` is based on observed running scripts differing from current source; unresolved source or resource effects return `null`, and `false` means no restart need was observed within the stated coverage. Use runtime observations, captures or conditions to assess behavior.
 

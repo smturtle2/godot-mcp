@@ -211,7 +211,8 @@ func _process(_delta: float) -> void:
 			elif busy and request.get("method", "") == "get_logs" and not request.get("params", {}).has("run_id"):
 				_respond(peer, request.get("id"), await documents.get_logs(request.get("params", {})))
 			elif busy:
-				_respond(peer, request.get("id"), fail("EDITOR_BUSY", "Wait for the reported editor operation before retrying this request.", progress()))
+				if not documents.operations.script_operations(request.get("params", {})).is_empty(): _execute(peer, request)
+				else: _respond(peer, request.get("id"), fail("EDITOR_BUSY", "Wait for the reported editor operation before retrying this request.", progress()))
 			else:
 				_execute(peer, request)
 
@@ -231,6 +232,10 @@ func _respond(peer: WebSocketPeer, id: Variant, result: Dictionary) -> void:
 	peer.send_text(payload)
 
 func _execute(peer: WebSocketPeer, request: Dictionary) -> void:
+	var prepared: Dictionary = await documents.operations.wait_for_scripts(request.get("params", {}))
+	if prepared.has("error"):
+		_respond(peer, request.get("id"), prepared)
+		return
 	enter_busy(str(request.get("method", "request")))
 	active_request.request_id = request.get("id")
 	var since: int = logs.mark()
@@ -423,7 +428,7 @@ func decode(value: Variant) -> Variant:
 func dirty_resources() -> Array:
 	var values: Array = []
 	for uri: String in resources:
-		if EditorInterface.is_object_edited(resources[uri]):
+		if documents.resource_storage(resources[uri]) != "imported" and EditorInterface.is_object_edited(resources[uri]):
 			values.append(uri)
 	return values
 

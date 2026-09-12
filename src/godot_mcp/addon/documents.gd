@@ -122,7 +122,6 @@ func validate_sources(uris: Array) -> Dictionary:
 	var overlays: Dictionary = store.overlays()
 	var conflicts: Array = store.conflicts()
 	if not conflicts.is_empty(): return host.fail("EXTERNAL_CHANGE", "Resolve source buffer and disk conflicts before validation.", {"conflicts": conflicts})
-	var before: Dictionary = overlays.duplicate(true)
 	var settings: Dictionary = host.assets.settings_snapshot()
 	if settings.has("error"): return settings
 	overlays["res://project.godot"] = settings.source
@@ -134,29 +133,7 @@ func validate_sources(uris: Array) -> Dictionary:
 		overlays[uri] = info.source
 		revisions[uri] = info.revision
 	var result: Dictionary = await validator.check(uris, overlays, revisions)
-	var stale: bool = store.overlays() != before
-	var current_settings: Dictionary = host.assets.settings_snapshot()
-	if current_settings.get("revision") != settings.revision: stale = true
-	for uri: String in uris:
-		if not store.source_matches(uri, revisions[uri]): stale = true
-	if stale:
-		for item: Dictionary in result.sources:
-			item.state = "pending"
-			item.valid = null
-			item.entries = [{"kind": "warning", "uri": item.uri, "line": 0, "message": "Sources changed during validation; request current diagnostics again."}]
-	if result.has("proof"): result.proof.requested_uris = uris.duplicate()
 	return result
-
-func validation_current(proof: Dictionary) -> Dictionary:
-	var overlays: Dictionary = store.overlays()
-	for uri: String in proof.get("requested_uris", []):
-		var info: Dictionary = source_info(uri)
-		if info.has("error") or info.get("external_change", false): return {"current": false, "reason": "A validated source is missing or has conflicting external edits."}
-		overlays[uri] = info.source
-	var settings: Dictionary = host.assets.settings_snapshot()
-	if settings.has("error"): return {"current": false, "reason": "Current project settings are unavailable."}
-	overlays["res://project.godot"] = settings.source
-	return validator.proof_current(proof, overlays)
 
 func validate_source(uri: String, _resource: Resource, _source: String) -> Dictionary:
 	var result: Dictionary = await validate_sources([uri])
@@ -169,6 +146,14 @@ func document_state(uri: String) -> Dictionary:
 	if info.has("error"): return {"uri": uri, "state": "unavailable"}
 	return {"uri": uri, "state": "saved" if not info.unsaved else ("modified" if info.exists_on_disk else "draft"), "revision": info.revision, "disk_revision": info.disk_revision, "base_disk_revision": info.base_disk_revision, "baseline_known": info.baseline_known, "conflict": info.conflict, "saved": not info.unsaved}
 
+func resource_storage(resource: Resource) -> String:
+	var uri: String = resource.resource_path
+	var source: String = uri.get_slice("::", 0)
+	if source.contains("/.godot/imported/") or (not source.is_empty() and FileAccess.file_exists(source + ".import")): return "imported"
+	if uri.contains("::"): return "embedded"
+	if not uri.begins_with("res://"): return "memory"
+	return "document" if uri.get_extension() in ResourceSaver.get_recognized_extensions(resource) else "external"
+
 func save_plan(uris: Array) -> Dictionary:
 	var scene_save: bool = false
 	for uri: String in uris:
@@ -180,7 +165,7 @@ func save_plan(uris: Array) -> Dictionary:
 		for uri: String in store.overlays():
 			if uri not in uris and uri not in additional: additional.append(uri)
 		for uri: String in host.dirty_resources():
-			if uri.begins_with("res://") and not uri.contains("::") and uri not in uris and uri not in additional: additional.append(uri)
+			if resource_storage(host.resources[uri]) == "document" and uri not in uris and uri not in additional: additional.append(uri)
 	additional.sort()
 	return {"uris": uris.duplicate(), "additional_uris": additional, "scope": "requested documents and observed edited external resources persisted by Godot scene saves"}
 
@@ -301,9 +286,15 @@ func save_documents(p: Dictionary) -> Dictionary:
 		else:
 			var resource: Resource = host.resource_uri(uri)
 			if not resource: error = ERR_FILE_NOT_FOUND
-			elif target.get_extension() not in ["tres", "res"]: error = ERR_INVALID_PARAMETER
+			elif target == uri and resource_storage(resource) != "document":
+				failed.append({"uri": uri, "index": request_index, "code": "IMPORTED_RESOURCE" if resource_storage(resource) == "imported" else "SAVE_AS_REQUIRED", "error": "This resource is not a directly saved document. Save an authored copy to a new .tres or .res path; its source remains unchanged."})
+				continue
+			elif target.get_extension() not in ResourceSaver.get_recognized_extensions(resource): error = ERR_INVALID_PARAMETER
 			else:
 				DirAccess.make_dir_recursive_absolute(target.get_base_dir())
+				# Keep imported identity and its users intact when exporting a copy.
+				var imported_copy: bool = resource_storage(resource) == "imported"
+				if imported_copy: resource = resource.duplicate(true)
 				error = ResourceSaver.save(resource, target, ResourceSaver.FLAG_CHANGE_PATH)
 				if error == OK:
 					host.register_resource(resource)
@@ -341,7 +332,7 @@ func save_documents(p: Dictionary) -> Dictionary:
 	for item: Dictionary in failed:
 		var record: Dictionary = persistence_document(item.uri)
 		var target: String = str(p.get("save_as", {}).get(item.uri, item.uri))
-		record.save = {"state": "failed", "index": item.index}
+		record.save = {"state": "skipped" if item.code == "SOURCE_SAVE_FAILED" else "failed", "index": item.index}
 		if target != item.uri: record.save.target = target
 		DocumentResult.put(result, record)
 		var retry_args: Dictionary = {"uris": [item.uri]}

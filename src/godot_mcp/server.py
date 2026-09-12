@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -14,7 +13,7 @@ from mcp.server.stdio import stdio_server
 from .bridge import EditorBridge, ToolError, validate_values
 from .catalog import SPECS, TOOL_SPECS
 from .input_validation import validate_arguments
-from .result_projection import project_result
+from .result_projection import project_result, result_summary
 from .source_tools import SourceTools
 from .version import PRODUCT_VERSION
 
@@ -48,7 +47,7 @@ def _tool_result(name: str, result: dict, *, project: str | None = None) -> type
     incomplete = ("error" in result or result.get("status") in {"partial", "failed"}
                   or (result.get("complete") is False and result.get("status") != "pending"))
     return types.CallToolResult(
-        content=[types.TextContent(type="text", text=json.dumps(result, ensure_ascii=False, separators=(",", ":"))), *images],
+        content=[types.TextContent(type="text", text=result_summary(name, result)), *images],
         structured_content=result, is_error=incomplete,
     )
 

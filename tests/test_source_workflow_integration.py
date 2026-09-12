@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import wave
 
 import pytest
 from jsonschema import Draft202012Validator
@@ -55,7 +56,7 @@ async def test_patch_drafts_search_preview_and_guarded_undo(editor):
         result = await finished(client, receipt)
         assert result["status"] == "completed", result
         assert {item["state"] for item in result["documents"]} == {"draft"}
-        assert all(item["validation"]["state"] == "valid" for item in result["documents"]), result
+        assert all("validation" not in item for item in result["documents"]), result
         assert not (bridge.project / "later.gd").exists()
         _, read = await invoke(client, "read_scripts", documents=[{"uri": "res://later.gd"}, {"uri": "res://dependent.gd"}])
         assert set(read["base_revisions"]) == {"res://later.gd", "res://dependent.gd"}
@@ -88,6 +89,9 @@ def native_editor(project):
 	if method == "_test_history":
 		logs._log_message("An old error that has been repaired", true)
 		return {"logged": true}
+	if method == "_test_dirty_import":
+		EditorInterface.set_object_edited(resource_uri(p.uri), true)
+		return {"marked": true}
 ''')
     path.write_text(source)
 
@@ -127,17 +131,35 @@ async def test_patch_merges_native_user_edits_and_rejects_overlap(editor):
         assert any("An old error" in item["message"] for item in logs["entries"]), logs
 
 
+@pytest.mark.parametrize("editor", [native_editor], indirect=True)
 async def test_bundle_saves_attaches_and_connects_in_phases(editor):
-    bridge, _ = editor
+    bridge, tmp = editor
     ref = {"scene": "res://main.tscn", "path": "Actor"}
     async with Client(create_server(bridge.project, bridge)) as client:
-        await invoke(client, "create_nodes", parent={"scene": "res://main.tscn", "path": "."}, nodes=[{"name": "Actor", "source": {"class": "Node2D"}}])
-        _, receipt = await invoke(client, "apply_script_changes", patch=added({"res://actor.gd": "extends Node2D\nvar health: int = 100\nfunc react(value: int) -> void:\n\thealth = value\n"}), save=True, attachments=[{"script": {"uri": "res://actor.gd", "node": ref}}], connections={"connect": [{"from": {"scene": "res://main.tscn", "path": "."}, "signal": "health_changed", "to": ref, "method": "react"}]}, wait_ms=0)
+        tone = tmp / "tone.wav"
+        with wave.open(str(tone), "wb") as audio:
+            audio.setparams((1, 2, 8000, 0, "NONE", "not compressed"))
+            audio.writeframes(b"\0\0" * 800)
+        _, imported = await invoke(client, "import_assets", files=[{"source": tone.as_uri(), "destination": "res://tone.wav"}])
+        imported = await finished(client, imported)
+        assert imported.get("complete"), imported
+        await bridge.call("_test_dirty_import", {"uri": "res://tone.wav"})
+        await invoke(client, "create_nodes", parent={"scene": "res://main.tscn", "path": "."}, nodes=[{"name": name, "source": {"class": kind}} for name, kind in [("Actor", "Node2D"), ("Mesh", "MeshInstance3D"), ("Audio", "AudioStreamPlayer")]])
+        _, material = await invoke(client, "create_resource", **{"class": "StandardMaterial3D"}, save_as="res://surface.tres")
+        response, assigned = await invoke(client, "update_nodes", changes=[
+            {"node": {**ref, "path": "Mesh"}, "set": {"material_override": material["resource"]}},
+            {"node": {**ref, "path": "Audio"}, "set": {"stream": {"$type": "Resource", "uri": "res://tone.wav"}}},
+        ])
+        assert not response.is_error, assigned
+        _, receipt = await invoke(client, "apply_script_changes", patch=added({"res://actor.gd": "extends Node2D\nvar health: int = 100\nfunc react(value: int) -> void:\n\thealth = value\n"}), save=True, attachments=[{"script": {"uri": "res://actor.gd", "node": ref}}], connections={"connect": [{"from": {"scene": "res://main.tscn", "path": "."}, "signal": "health_changed", "to": ref, "method": "react"}]})
+        assert receipt["status"] == "completed" and "phases" not in receipt, receipt
         result = await finished(client, receipt)
         assert result["status"] == "completed", result
         assert result["phases"]["bindings"] == result["phases"]["save_bindings"] == "completed"
         assert len(result["undo"]["steps"]) == 3
         assert 'path="res://actor.gd"' in (bridge.project / "main.tscn").read_text()
+        assert 'path="res://tone.wav"' in (bridge.project / "main.tscn").read_text()
+        assert all(item["uri"] != "res://tone.wav" for item in result["documents"])
         _, attached = await invoke(client, "get_resource", target={"node": {**ref, "property": "script"}}, properties=["source_code"])
         assert attached["uri"] == "res://actor.gd"
         _, again = await invoke(client, "get_operation_result", operation_id=result["operation_id"])

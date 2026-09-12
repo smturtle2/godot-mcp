@@ -51,11 +51,12 @@ func plan(object: Object, values: Dictionary) -> Dictionary:
 			if not mismatch.is_empty():
 				mismatch.details.property = key
 				return {"error": mismatch}
-		# Non-tool scripts cannot instantiate in the editor. Attachment compatibility
-		# depends on the declared base type; compilation belongs to source validation.
 		if object is Node and key == "script" and value is Script:
+			var prepared: Dictionary = host.documents.store.prepare_script(value)
+			if prepared.has("error"): return prepared
 			var base_type: String = value.get_instance_base_type()
-			if base_type.is_empty() or not object.is_class(base_type):
-				return _error("script base type is incompatible with the target node")
+			if base_type.is_empty(): return host.fail("SCRIPT_NOT_READY", "The script's base type is not available yet.", {"uri": value.resource_path})
+			if not object.is_class(base_type):
+				return host.fail("TYPE_MISMATCH", "The script base type is incompatible with the target node.", {"uri": value.resource_path, "expected": base_type, "actual": object.get_class()})
 		changes.append({"object": object, "property": key, "before": object.get(key), "after": value})
 	return {"changes": changes}

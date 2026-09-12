@@ -122,7 +122,7 @@ func _unsaved_documents() -> Dictionary:
 	for uri: String in host.documents.dirty_uris():
 		if uri not in uris: uris.append(uri)
 	for uri: String in host.dirty_resources():
-		if uri.begins_with("res://") and not uri.contains("::") and uri not in uris: uris.append(uri)
+		if host.documents.resource_storage(host.resources[uri]) == "document" and uri not in uris: uris.append(uri)
 	var settings: Dictionary = host.assets.settings_snapshot()
 	if settings.has("error"): return settings
 	if not settings.saved and "res://project.godot" not in uris: uris.append("res://project.godot")

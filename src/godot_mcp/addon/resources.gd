@@ -19,8 +19,7 @@ func dispatch(method: String, p: Dictionary) -> Dictionary:
 	return host.fail("UNKNOWN_TOOL", method)
 
 func imported(resource: Resource) -> bool:
-	var source: String = resource.resource_path.get_slice("::", 0)
-	return source.contains("/.godot/imported/") or (not source.is_empty() and FileAccess.file_exists(source + ".import"))
+	return host.documents.resource_storage(resource) == "imported"
 
 func nested(value: Variant, wanted: Resource, seen: Dictionary, depth: int = 0) -> bool:
 	if value is Resource and value == wanted: return true

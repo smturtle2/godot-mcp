@@ -52,21 +52,16 @@ async def test_run_revision_guard_startup_observation_and_changed_source(editor)
         await invoke(client, "stop_game", run_id=restarted["run_id"])
 
 
-async def test_current_diagnostics_are_pending_then_fresh_and_cache_dependencies(editor):
+async def test_snapshot_diagnostics_finish_despite_unrelated_live_changes(editor):
     bridge, _ = editor
     async with Client(create_server(bridge.project, bridge)) as client:
         response, pending = await invoke(client, "get_diagnostics", uris=["res://main.gd"], wait_ms=0)
         assert not response.is_error and pending["state"] == "pending" and "error_count" not in pending
         _, context = await invoke(client, "get_context")
         assert any(op["operation_id"] == pending["operation_id"] for op in context["pending_operations"])
+        (bridge.project / "README.md").write_text("Unrelated documentation edit\n")
+        await invoke(client, "create_scene", uri="res://separate.tscn", root_class="Node")
         first = await finished(client, pending)
-        assert first["state"] == "valid" and first["error_count"] == 0 and first["cache"] == "compiled", first
-        _, repeated = await invoke(client, "get_diagnostics", uris=["res://main.gd"], wait_ms=0)
-        reused = await finished(client, repeated)
-        assert reused["cache"] == "reused" and reused["fingerprint"] == first["fingerprint"], reused
-        await invoke(client, "update_settings", settings={"application/config/name": "Changed current settings"})
-        _, request = await invoke(client, "get_diagnostics", uris=["res://main.gd"], wait_ms=0)
-        changed = await finished(client, request)
-        assert changed["cache"] == "compiled" and changed["fingerprint"] != first["fingerprint"], changed
-        response, unsaved = await invoke(client, "run_scene")
-        assert response.is_error and unsaved["error"]["code"] == "UNSAVED_DOCUMENTS" and "res://project.godot" in unsaved["error"]["details"]["uris"], unsaved
+        assert first["state"] == "valid" and first["error_count"] == 0, first
+        assert first["basis"] == "snapshot" and first["snapshot_id"], first
+        assert "fingerprint" not in first and "cache" not in first

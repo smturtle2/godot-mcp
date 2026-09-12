@@ -25,6 +25,38 @@ func pending() -> Array:
 func resume_availability(id: String) -> Dictionary:
 	return {"available": jobs.has(id) and not jobs[id].running, "running": jobs.has(id) and jobs[id].running}
 
+func _script_uris(value: Variant, uris: Array) -> void:
+	if value is Dictionary:
+		if value.get("$type") == "Resource" and str(value.get("uri", "")).ends_with(".gd"):
+			if value.uri not in uris: uris.append(value.uri)
+		else:
+			for child: Variant in value.values(): _script_uris(child, uris)
+	elif value is Array:
+		for child: Variant in value: _script_uris(child, uris)
+
+func script_operations(value: Variant) -> Array:
+	var uris: Array = []
+	_script_uris(value, uris)
+	var ids: Array = []
+	for id: String in jobs:
+		if not jobs[id].running: continue
+		for uri: String in uris:
+			if jobs[id].revisions.has(uri):
+				ids.append(id)
+				break
+	return ids
+
+func wait_for_scripts(value: Variant) -> Dictionary:
+	var pending_ids: Array = script_operations(value)
+	if pending_ids.is_empty(): return {}
+	var deadline: int = Time.get_ticks_msec() + 15000
+	while not stopped and (not pending_ids.is_empty() or host.busy):
+		if Time.get_ticks_msec() >= deadline:
+			return host.fail("SCRIPT_NOT_READY", "The source operation is still running; wait for its result before attaching.", {"operation_ids": pending_ids})
+		await host.get_tree().process_frame
+		pending_ids = script_operations(value)
+	return host.fail("EDITOR_STOPPED", "The editor stopped while waiting for script preparation.") if stopped else {}
+
 func _prune() -> void:
 	for id: String in jobs.keys():
 		if not jobs[id].running and not host.operation_records.records.has(id): jobs.erase(id)
@@ -114,13 +146,6 @@ func _guard_sources(job: Dictionary) -> Dictionary:
 			return host.fail("SOURCE_CHANGED", "Source changed after this bundle was applied. Read current sources; resume with their revisions to accept repaired text.", {"uri": uri, "expected_revision": job.revisions[uri], "current_revision": info.revision, "conflict": info.conflict})
 	return {}
 
-func _guard_validated(job: Dictionary) -> Dictionary:
-	var guard: Dictionary = _guard_sources(job)
-	if not guard.is_empty(): return guard
-	var proof: Dictionary = documents.validation_current(job.get("validation_proof", {}))
-	if not proof.current: return host.fail("VALIDATION_STALE", str(proof.reason), {"operation_id": job.id})
-	return {}
-
 func start(p: Dictionary) -> Dictionary:
 	if p.get("editor_epoch", "") != host.epoch: return host.fail("EDITOR_RESTARTED", "Read current sources after the editor restart.")
 	_prune()
@@ -193,16 +218,15 @@ func start(p: Dictionary) -> Dictionary:
 	result.operation_id = reservation.operation_id
 	result.attachments = []
 	result.connections = []
-	result.phases = {"source": "applied", "save_sources": "pending" if p.get("save", false) else "not_requested", "validation": "pending", "editor_reload": "pending", "bindings": "pending" if not captured.bindings.is_empty() else "not_requested", "save_bindings": "pending" if p.get("save", false) and not captured.bindings.is_empty() else "not_requested"}
-	result.runtime = {"state": "unverified", "reason": "Source application and editor reload do not verify a running game's behavior."}
-	var job: Dictionary = {"id": reservation.operation_id, "plans": plans, "revisions": revisions, "applied_revisions": revisions.duplicate(), "bindings": captured.bindings, "save": p.get("save", false), "result": result, "validation": {}, "reload": {}, "saves": {}, "running": true, "reload_mode": p.get("reload", "auto"), "phase": "save_sources" if p.get("save", false) else "validation", "attempts": []}
+	result.phases = {"source": "applied", "save_sources": "pending" if p.get("save", false) else "not_requested", "editor_reload": "pending", "bindings": "pending" if not captured.bindings.is_empty() else "not_requested", "save_bindings": "pending" if p.get("save", false) and not captured.bindings.is_empty() else "not_requested"}
+	var job: Dictionary = {"id": reservation.operation_id, "plans": plans, "revisions": revisions, "applied_revisions": revisions.duplicate(), "bindings": captured.bindings, "save": p.get("save", false), "result": result, "reload": {}, "saves": {}, "running": true, "reload_mode": p.get("reload", "auto"), "phase": "save_sources" if p.get("save", false) else "editor_reload", "attempts": []}
 	jobs[job.id] = job
 	_publish(job, true)
 	# Retain the receipt first, then finish source persistence under this request's
 	# existing gate. No frame or deferred continuation exposes half of the bundle.
 	if job.save:
 		if not await _save(job, job.revisions.keys(), "save_sources", true): return job.result.duplicate(true)
-		job.phase = "validation"
+		job.phase = "editor_reload"
 		_publish(job, true)
 	_advance.call_deferred(job.id)
 	return result.duplicate(true)
@@ -223,24 +247,19 @@ func resume(p: Dictionary) -> Dictionary:
 			var info: Dictionary = documents.source_info(uri)
 			if info.has("error"): return info
 			if info.external_change or accepted.get(uri) != info.revision: return host.fail("REVISION_CONFLICT", "Resume requires the current revision of every source.", {"uri": uri, "current_revision": info.revision})
-		job.revisions = accepted.duplicate()
-		job.validation.clear()
-		job.reload.clear()
-		job.phase = "save_sources" if job.save else "validation"
+		if accepted != job.revisions:
+			job.revisions = accepted.duplicate()
+			job.reload.clear()
+			job.phase = "save_sources" if job.save else "editor_reload"
+			job.result.phases.editor_reload = "pending"
 	var guard: Dictionary = _guard_sources(job)
 	if not guard.is_empty(): return guard
 	for binding: Dictionary in job.bindings:
 		if not binding.done:
 			var binding_guard: Dictionary = _guard_binding(binding)
 			if not binding_guard.is_empty(): return binding_guard
+	if job.phase == "bindings" and "deferred" in job.reload.values(): job.phase = "editor_reload"
 	job.attempts.append({"phase": job.phase, "failures": job.result.failures.duplicate(true), "at_usec": Time.get_ticks_usec()})
-	# Recheck dependency validity and reload after a pause, even if only a
-	# dependency/save state changed. Completed binding steps remain completed.
-	job.validation.clear()
-	job.reload.clear()
-	job.phase = "save_sources" if job.save else "validation"
-	job.result.phases.validation = "pending"
-	job.result.phases.editor_reload = "pending"
 	if job.attempts.size() > 16: job.attempts.pop_front()
 	job.result.failures = []
 	job.running = true
@@ -250,7 +269,6 @@ func resume(p: Dictionary) -> Dictionary:
 
 func _refresh(job: Dictionary) -> void:
 	job.result.phases.source = "staged" if documents.store.has_pending_sources(job.revisions.keys()) else "applied"
-	job.result.runtime = host.runtime.source_state(job.revisions.keys())
 	var records: Array = []
 	for plan: Dictionary in job.plans:
 		var record: Dictionary = DocumentResult.document(documents.document_state(plan.uri), "created" if plan.create else "updated")
@@ -258,8 +276,6 @@ func _refresh(job: Dictionary) -> void:
 		record.merged = plan.get("merged", false)
 		if job.saves.has(plan.uri): record.save = job.saves[plan.uri].duplicate(true)
 		record.live_reload = job.reload.get(plan.uri, "not_attempted")
-		if job.validation.has(plan.uri): DocumentResult.validation(record, job.validation[plan.uri])
-		else: record.validation = {"state": "pending", "scope": "snapshot", "revision": job.revisions[plan.uri], "entries": []}
 		records.append(record)
 	for record: Dictionary in job.result.documents:
 		if not job.revisions.has(record.uri): records.append(record)
@@ -304,7 +320,13 @@ func _save(job: Dictionary, uris: Array, phase: String, owns_gate: bool = false)
 		if not owns_gate: host.busy = false
 		_pause(job, phase, guard)
 		return false
-	var result: Dictionary = await documents.save_documents({"uris": uris})
+	var remaining: Array = []
+	for uri: String in uris:
+		if phase == "save_sources" and job.saves.get(uri, {}).get("state") == "saved":
+			var info: Dictionary = documents.source_info(uri)
+			if not info.has("error") and info.disk_revision == job.revisions[uri]: continue
+		remaining.append(uri)
+	var result: Dictionary = await documents.save_documents({"uris": remaining}) if not remaining.is_empty() else {"documents": [], "complete": true}
 	if not owns_gate: host.busy = false
 	if result.has("error"):
 		_pause(job, phase, result)
@@ -325,31 +347,6 @@ func _advance(id: String) -> void:
 	var job: Dictionary = jobs[id]
 	if job.phase == "save_sources":
 		if not await _save(job, job.revisions.keys(), "save_sources"): return
-		job.phase = "validation"
-		_publish(job, true)
-	if job.phase == "validation":
-		# A compiler worker runs without holding the editor mutation gate. Its
-		# complete fingerprint and source guards invalidate a concurrent edit.
-		var guard: Dictionary = _guard_sources(job)
-		if not guard.is_empty():
-			_pause(job, "validation", guard)
-			return
-		var checked: Dictionary = await documents.validate_sources(job.revisions.keys())
-		if stopped: return
-		if checked.has("error"):
-			_pause(job, "validation", checked)
-			return
-		job.validation.clear()
-		job.validation_proof = checked.get("proof", {})
-		var valid: bool = true
-		for source: Dictionary in checked.sources:
-			job.validation[source.uri] = source
-			if source.get("state") != "valid": valid = false
-		if checked.has("snapshot_id"): job.result.validation_snapshot = checked.snapshot_id
-		if not valid:
-			_pause(job, "validation", {"code": "VALIDATION_BLOCKED", "message": "Current sources must have a fresh valid snapshot before bindings or editor reload can proceed."})
-			return
-		job.result.phases.validation = "completed"
 		job.phase = "editor_reload"
 		_publish(job, true)
 	if job.phase == "editor_reload":
@@ -358,29 +355,19 @@ func _advance(id: String) -> void:
 			_pause(job, "editor_reload", {"code": "RELOAD_DEFERRED", "message": "Explicit editor reload was deferred. Saved files remain saved; Godot may still reload automatically. Resume with reload=auto when ready."})
 			return
 		if not await _gate(job): return
-		var guard: Dictionary = _guard_validated(job)
+		var guard: Dictionary = _guard_sources(job)
 		if not guard.is_empty():
 			host.busy = false
 			_pause(job, "editor_reload", guard)
 			return
 		for plan: Dictionary in job.plans:
-			var resource: Resource = documents.store.ensure_resource(plan.uri)
-			if not resource:
+			if job.reload.get(plan.uri) == "succeeded": continue
+			var reloaded: Dictionary = documents.store.reload_source(plan.uri)
+			job.reload[plan.uri] = reloaded.get("state", "failed")
+			if reloaded.has("error"):
 				host.busy = false
-				_pause(job, "editor_reload", {"code": "SOURCE_UNAVAILABLE", "message": "The source resource is no longer available.", "details": {"uri": plan.uri}})
+				_pause(job, "editor_reload", reloaded)
 				return
-			if not FileAccess.file_exists(plan.uri):
-				job.reload[plan.uri] = "deferred"
-			elif resource is Script:
-				var reloaded: Error = resource.reload(true)
-				job.reload[plan.uri] = "succeeded" if reloaded == OK else "failed"
-				if reloaded != OK:
-					host.busy = false
-					_pause(job, "editor_reload", {"code": "LIVE_RELOAD_FAILED", "message": "The source snapshot is valid but the editor could not reload this script. Save required drafts, then resume.", "details": {"uri": plan.uri}})
-					return
-			elif resource is Shader:
-				resource.get_rid()
-				job.reload[plan.uri] = "succeeded"
 		host.busy = false
 		job.result.phases.editor_reload = "deferred" if "deferred" in job.reload.values() else "completed"
 		job.phase = "bindings"
@@ -389,7 +376,7 @@ func _advance(id: String) -> void:
 		for binding: Dictionary in job.bindings:
 			if binding.done: continue
 			if not await _gate(job): return
-			var guard: Dictionary = _guard_validated(job)
+			var guard: Dictionary = _guard_sources(job)
 			if guard.is_empty(): guard = _guard_binding(binding)
 			if not guard.is_empty():
 				host.busy = false

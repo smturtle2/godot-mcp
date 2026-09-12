@@ -30,7 +30,9 @@ def project_result(name: str, result: Any) -> Any:
     """Select explicit receipt fields; never mutate a snapshot or execute work."""
     if not isinstance(result, dict) or name not in DOCUMENT_TOOLS or "error" in result or result.get("preview"):
         return copy.deepcopy(result)
-    receipt = _pick(result, ("operation_id", "status", "details_retained", "phase", "phases", "resumable", "runtime", "validation_snapshot", "result_query_error", "editor_events", "save_receipt"))
+    receipt = _pick(result, ("operation_id", "status", "details_retained", "result_query_error", "editor_events"))
+    if result.get("status") != "completed":
+        receipt.update(_pick(result, ("phase", "resumable", "save_receipt")))
     receipt["documents"] = [_document(record) for record in result.get("documents", [])]
     if result.get("failures"):
         receipt["failures"] = copy.deepcopy(result["failures"])
@@ -40,12 +42,34 @@ def project_result(name: str, result: Any) -> Any:
         receipt["connections"] = copy.deepcopy(result["connections"])
     undo = result.get("undo", {})
     if undo.get("edit_id") is not None or undo.get("retained_files"):
-        receipt["undo"] = _pick(undo, ("edit_id", "scope", "retained_files", "steps"))
+        receipt["undo"] = _pick(undo, ("edit_id",))
+        if len(undo.get("steps", [])) > 1:
+            receipt["undo"]["steps"] = _pick(undo, ("steps",))["steps"]
+        if undo.get("retained_files"):
+            receipt["undo"]["retained_files"] = copy.deepcopy(undo["retained_files"])
     # Modified/draft document states already identify routine persistence needs.
     implied = {record["uri"] for record in receipt["documents"] if record.get("state") in {"modified", "draft"}}
     pending_save = [uri for uri in result.get("pending_save", []) if result.get("status") != "completed" or uri not in implied]
     if pending_save:
         receipt["pending_save"] = copy.deepcopy(pending_save)
-    if result.get("pending"):
-        receipt["pending"] = copy.deepcopy(result["pending"])
     return receipt
+
+
+def result_summary(name: str, result: dict) -> str:
+    """Readable text without a second serialized copy of the structured payload."""
+    if "error" in result:
+        error = result["error"]
+        return f"{error.get('code', 'ERROR')}: {error.get('message', 'Request failed.')}"
+    summary = f"{name}: {result.get('status', 'completed')}."
+    for key in ("documents", "nodes", "sources", "assets"):
+        if isinstance(result.get(key), list):
+            summary += f" {len(result[key])} {key}."
+            break
+    failures = result.get("failures", [])
+    if failures:
+        summary += " " + "; ".join(f"{item.get('code', 'ERROR')}: {item.get('message', '')}" for item in failures[:3])
+        if len(failures) > 3:
+            summary += f"; {len(failures) - 3} more failures in the result."
+    if result.get("status") == "pending" and result.get("operation_id"):
+        summary += f" Operation: {result['operation_id']}."
+    return summary

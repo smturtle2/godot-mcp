@@ -56,7 +56,11 @@ async def test_source_identity_explicit_save_scope_and_save_undo(editor):
         response, saved = await invoke(client, "save_documents", uris=[uri, "res://main.tscn", "res://missing.gd"])
         assert response.is_error and saved["status"] == "partial", saved
         saved = await finished(client, saved)
-        assert [item["save"]["state"] for item in saved["documents"]] == ["saved", "saved", "failed"], saved
+        assert {item["uri"]: item["save"]["state"] for item in saved["documents"]} == {
+            uri: "saved",
+            "res://main.tscn": "skipped",
+            "res://missing.gd": "failed",
+        }, saved
         assert 'path="res://identity.gd"' in (bridge.project / "main.tscn").read_text()
         response, undone = await invoke(client, "undo_edit", edit_id=changed["undo"]["edit_id"])
         assert not response.is_error, undone
@@ -116,9 +120,12 @@ async def test_invalid_shader_repair_then_resume_and_draft_attachment_save(edito
         _, material = await invoke(client, "create_resource", **{"class": "ShaderMaterial"}, save_as="res://material.tres")
         material_uri = material["resource"]["uri"]
         created = await patch(client, added({uri: "shader_type canvas_item;\nvoid fragment() { COLOR = unknown_symbol; }\n"}), attachments=[{"shader": {"uri": uri, "target": {"shared": {"uri": material_uri}}}}])
-        assert created["status"] == "partial" and created["phase"] == "validation", created
-        assert created["documents"][0]["validation"]["state"] == "invalid"
+        assert created["status"] == "partial" and created["phase"] == "bindings", created
+        assert created["failures"][0]["code"] == "SOURCE_NOT_SAVED", created
         assert created["documents"][0]["state"] == "draft" and not (bridge.project / "repairable.gdshader").exists()
+        _, diagnostics = await invoke(client, "get_diagnostics", uris=[uri], wait_ms=0)
+        diagnostics = await finished(client, diagnostics)
+        assert diagnostics["state"] == "invalid" and diagnostics["sources"][0]["valid"] is False, diagnostics
         repaired = await change(client, uri, "void fragment() { COLOR = unknown_symbol; }", "void fragment() { COLOR = vec4(1.0); }")
         assert repaired["status"] == "completed", repaired
         current = await read(client, uri)
@@ -141,7 +148,7 @@ async def test_document_detail_save_as_attempts(editor):
         created = await patch(client, added({uri: "extends Node\nvar number: int = 1\n"}), save=True)
         document = created["documents"][0]
         assert {"disk_revision", "base_disk_revision", "baseline_known"} <= document.keys()
-        assert document["validation"]["state"] == "valid" and "revision" not in document["validation"]
+        assert "validation" not in document
         response, saved = await invoke(client, "save_documents", uris=[uri], save_as={uri: moved_uri})
         assert not response.is_error, saved
         moved = (await finished(client, saved))["documents"]

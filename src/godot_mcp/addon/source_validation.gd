@@ -1,6 +1,6 @@
 @tool
 extends RefCounted
-## Validate one coherent copy of disk files plus unsaved source overlays.
+## Diagnose captured disk files plus unsaved source overlays. Live changes do not invalidate this copy.
 ## Godot compiler caches and live class reloads never determine these results.
 var host: EditorPlugin
 const MAX_FILES := 20000
@@ -12,8 +12,6 @@ var checking: bool = false
 var stopped: bool = false
 var child_pid: int = 0
 var lifecycle := Mutex.new()
-var cache: Dictionary = {}
-const MAX_CACHE_BYTES := 16 * 1024 * 1024
 
 func _init(editor_host: EditorPlugin) -> void:
 	host = editor_host
@@ -26,7 +24,7 @@ func check(uris: Array, overlays: Dictionary, revisions: Dictionary) -> Dictiona
 	worker = Thread.new()
 	var project: String = ProjectSettings.globalize_path("res://")
 	var executable: String = OS.get_executable_path()
-	var error: Error = worker.start(_run_cached.bind(project, executable, uris.duplicate(), overlays.duplicate(true), revisions.duplicate(true)))
+	var error: Error = worker.start(_run.bind(project, executable, uris.duplicate(), overlays.duplicate(true), revisions.duplicate(true)))
 	if error != OK:
 		checking = false
 		return unavailable(uris, revisions, "Cannot start the validation worker.")
@@ -46,7 +44,6 @@ func shutdown() -> void:
 	if worker and worker.is_started(): worker.wait_to_finish()
 	worker = null
 	checking = false
-	cache.clear()
 
 func _stopped() -> bool:
 	lifecycle.lock()
@@ -54,76 +51,16 @@ func _stopped() -> bool:
 	lifecycle.unlock()
 	return value
 
-func _sorted(values: Dictionary) -> Dictionary:
-	var result: Dictionary = {}
-	var keys: Array = values.keys()
-	keys.sort()
-	for key: String in keys: result[key] = values[key]
-	return result
-
-func _run_cached(project: String, executable: String, uris: Array, overlays: Dictionary, revisions: Dictionary) -> Dictionary:
-	var manifest: Dictionary = {}
-	var excluded: Array[String] = []
-	var symlinks: Array[String] = []
-	var message: String = _fingerprint_tree(project, manifest, [0, 0], excluded, symlinks)
-	if not message.is_empty(): return unavailable(uris, revisions, message)
-	var overlay_hashes: Dictionary = {}
-	for uri: String in overlays: overlay_hashes[uri] = str(overlays[uri]).sha256_text()
-	symlinks.sort()
-	excluded.sort()
-	var executable_hash: String = _hash_file(executable)
-	if executable_hash.is_empty(): return unavailable(uris, revisions, "Cannot identify the validation executable.")
-	var fingerprint: String = JSON.stringify([_sorted(manifest), _sorted(overlay_hashes), uris, _sorted(revisions), symlinks, excluded, executable_hash]).sha256_text()
-	var reused: bool = cache.has(fingerprint)
-	var result: Dictionary = cache[fingerprint].duplicate(true) if reused else _run(project, executable, uris, overlays, revisions)
-	# A cache hit still needs a fresh disk check. A new snapshot must correspond
-	# to the fingerprint captured before compilation, not a racing later state.
-	message = _project_changed(project, manifest, symlinks)
-	if not message.is_empty() or _hash_file(executable) != executable_hash:
-		return unavailable(uris, revisions, message if not message.is_empty() else "The validator executable changed during validation.")
-	result.cache = "reused" if reused else "compiled"
-	result.fingerprint = fingerprint
-	var settled: bool = result.has("snapshot_id")
-	for source: Dictionary in result.sources:
-		if source.get("state") not in ["valid", "invalid"]: settled = false
-	if settled and not reused:
-		cache[fingerprint] = result.duplicate(true)
-		while cache.size() > 8 or JSON.stringify(cache).to_utf8_buffer().size() > MAX_CACHE_BYTES:
-			cache.erase(cache.keys()[0])
-	result.proof = {"manifest": manifest, "symlinks": symlinks, "overlays": overlay_hashes, "executable": executable_hash}
-	return result
-
-func proof_current(proof: Dictionary, overlays: Dictionary) -> Dictionary:
-	if proof.is_empty(): return {"current": false, "reason": "No validation input proof is available."}
-	var hashes: Dictionary = {}
-	for uri: String in overlays: hashes[uri] = str(overlays[uri]).sha256_text()
-	if hashes != proof.overlays: return {"current": false, "reason": "An unsaved source or project setting changed after validation."}
-	var message: String = _project_changed(ProjectSettings.globalize_path("res://"), proof.manifest, proof.symlinks)
-	if not message.is_empty(): return {"current": false, "reason": message}
-	if _hash_file(OS.get_executable_path()) != proof.executable: return {"current": false, "reason": "The validator executable changed."}
-	return {"current": true}
-
 func unavailable(uris: Array, revisions: Dictionary, message: String) -> Dictionary:
 	var sources: Array = []
 	for uri: String in uris:
 		sources.append({"uri": uri, "revision": revisions.get(uri), "state": "unavailable", "valid": null, "scope": "snapshot", "entries": [{"kind": "error", "uri": uri, "line": 0, "message": message}]})
 	return {"sources": sources}
 
-func _hash_file(path: String) -> String:
-	var file := FileAccess.open(path, FileAccess.READ)
-	if not file: return ""
-	var hashing := HashingContext.new()
-	if hashing.start(HashingContext.HASH_SHA256) != OK:
-		file.close()
-		return ""
-	while not file.eof_reached(): hashing.update(file.get_buffer(1024 * 1024))
-	file.close()
-	return hashing.finish().hex_encode()
-
-func _walk_tree(source: String, target: String, budget: Array, manifest: Dictionary, excluded: Array[String], symlinks: Array[String], copy_files: bool, relative: String = "") -> String:
+func _copy_tree(source: String, target: String, budget: Array, excluded: Array[String], symlinks: Array[String], relative: String = "") -> String:
 	var directory := DirAccess.open(source)
 	if not directory: return "Cannot read project directory: " + source
-	if copy_files and DirAccess.make_dir_recursive_absolute(target) != OK: return "Cannot create validation directory."
+	if DirAccess.make_dir_recursive_absolute(target) != OK: return "Cannot create validation directory."
 	directory.list_dir_begin()
 	var name: String = directory.get_next()
 	while not name.is_empty():
@@ -139,7 +76,7 @@ func _walk_tree(source: String, target: String, budget: Array, manifest: Diction
 			name = directory.get_next()
 			continue
 		if directory.current_is_dir():
-			var message: String = _walk_tree(from, to, budget, manifest, excluded, symlinks, copy_files, relative.path_join(name))
+			var message: String = _copy_tree(from, to, budget, excluded, symlinks, relative.path_join(name))
 			if not message.is_empty(): return message
 		else:
 			var file := FileAccess.open(from, FileAccess.READ)
@@ -148,46 +85,10 @@ func _walk_tree(source: String, target: String, budget: Array, manifest: Diction
 			budget[1] += file.get_length()
 			file.close()
 			if budget[0] > MAX_FILES or budget[1] > MAX_BYTES: return "Validation snapshot exceeds 20000 files or 512 MiB."
-			if copy_files and DirAccess.copy_absolute(from, to) != OK: return "Cannot copy project file: " + from
-			var digest: String = _hash_file(to if copy_files else from)
-			if digest.is_empty(): return "Cannot hash validation snapshot file: " + to
-			manifest[relative.path_join(name)] = digest
+			if DirAccess.copy_absolute(from, to) != OK: return "Cannot copy project file: " + from
 		name = directory.get_next()
 	directory.list_dir_end()
 	return ""
-
-func _copy_tree(source: String, target: String, budget: Array, manifest: Dictionary, excluded: Array[String], symlinks: Array[String]) -> String:
-	return _walk_tree(source, target, budget, manifest, excluded, symlinks, true)
-
-func _fingerprint_tree(source: String, manifest: Dictionary, budget: Array, excluded: Array[String], symlinks: Array[String]) -> String:
-	return _walk_tree(source, "", budget, manifest, excluded, symlinks, false)
-
-func _project_changed(project: String, captured: Dictionary, captured_symlinks: Array[String] = []) -> String:
-	var current: Dictionary = {}
-	var current_excluded: Array[String] = []
-	var current_symlinks: Array[String] = []
-	var message: String = _fingerprint_tree(project, current, [0, 0], current_excluded, current_symlinks)
-	if not message.is_empty(): return message
-	var added: Array[String] = []
-	var deleted: Array[String] = []
-	var modified: Array[String] = []
-	for path: String in current:
-		if not captured.has(path): added.append(path)
-		elif captured[path] != current[path]: modified.append(path)
-	for path: String in captured:
-		if not current.has(path): deleted.append(path)
-	added.sort()
-	deleted.sort()
-	modified.sort()
-	var changes: Array[String] = []
-	current_symlinks.sort()
-	var previous_symlinks: Array[String] = captured_symlinks.duplicate()
-	previous_symlinks.sort()
-	if current_symlinks != previous_symlinks: changes.append("excluded symlink paths changed")
-	if not added.is_empty(): changes.append("added: " + ", ".join(added))
-	if not deleted.is_empty(): changes.append("deleted: " + ", ".join(deleted))
-	if not modified.is_empty(): changes.append("modified: " + ", ".join(modified))
-	return "" if changes.is_empty() else "Project changed during validation (" + "; ".join(changes) + ")."
 
 func _remove_tree(path: String) -> void:
 	var directory := DirAccess.open(path)
@@ -319,10 +220,9 @@ func _check_script(executable: String, snapshot: String, uri: String, revisions:
 func _run(project: String, executable: String, uris: Array, overlays: Dictionary, revisions: Dictionary) -> Dictionary:
 	var deadline: int = Time.get_ticks_msec() + 60000
 	var snapshot: String = OS.get_cache_dir().path_join("godot-mcp-validation-" + Crypto.new().generate_random_bytes(12).hex_encode())
-	var manifest: Dictionary = {}
 	var excluded: Array[String] = []
 	var symlinks: Array[String] = []
-	var message: String = _copy_tree(project, snapshot, [0, 0], manifest, excluded, symlinks)
+	var message: String = _copy_tree(project, snapshot, [0, 0], excluded, symlinks)
 	if message.is_empty():
 		for uri: String in overlays:
 			var target: String = snapshot.path_join(uri.trim_prefix("res://"))
@@ -385,7 +285,6 @@ func _run(project: String, executable: String, uris: Array, overlays: Dictionary
 			else: message = "Shader compiler returned no usable result."
 	if message.is_empty():
 		for item: Dictionary in result.sources: _classify_excluded_dependencies(item, symlinks)
-		message = _project_changed(project, manifest, symlinks)
 		result.sources.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return uris.find(a.uri) < uris.find(b.uri))
 		result.snapshot_id = snapshot.get_file()
 		result.source_revisions = revisions

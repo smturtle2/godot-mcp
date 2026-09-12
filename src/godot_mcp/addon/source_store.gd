@@ -216,7 +216,7 @@ func set_source(uri: String, source: String, resource: Resource = null) -> void:
 	if not states.has(uri): states[uri] = {"base_known": true, "base_disk_revision": disk.revision}
 	if not resource: resource = ensure_resource(uri, true)
 	if resource:
-		resource.resource_path = uri
+		if resource.resource_path != uri: resource.resource_path = uri
 		host.register_resource(resource)
 	if staging:
 		states[uri].source = source
@@ -263,6 +263,41 @@ func has_pending_sources(uris: Array) -> bool:
 	for uri: String in uris:
 		if states.get(uri, {}).get("pending_publication", false): return true
 	return false
+
+func reload_source(uri: String) -> Dictionary:
+	var info: Dictionary = source_info(uri)
+	if info.has("error"): return info
+	if info.external_change: return host.fail("SOURCE_CHANGED", "Resolve the source/disk conflict before editor reload.", {"uri": uri})
+	if not info.exists_on_disk: return {"state": "deferred"}
+	var resource: Resource = ensure_resource(uri)
+	if not resource: return host.fail("SOURCE_UNAVAILABLE", "The source resource is unavailable.", {"uri": uri})
+	var error: Error = OK
+	if resource is Script:
+		if resource.source_code != info.source: resource.source_code = info.source
+		error = resource.reload(true)
+	elif resource is Shader:
+		if resource.code != info.source: resource.code = info.source
+		resource.get_rid()
+	EditorInterface.set_object_edited(resource, info.unsaved)
+	states[uri].reload_revision = info.revision
+	states[uri].reload_error = error
+	if error != OK:
+		return host.fail("SCRIPT_LOAD_FAILED", "Godot could not load the current script: " + error_string(error), {"uri": uri, "revision": info.revision, "recovery": {"tool": "get_logs", "arguments": {"kinds": ["error"]}}})
+	return {"state": "succeeded"}
+
+func prepare_script(script: Script) -> Dictionary:
+	var uri: String = script.resource_path
+	if not uri.ends_with(".gd"): return {}
+	var info: Dictionary = source_info(uri)
+	if info.has("error"): return info
+	if not info.exists_on_disk or states[uri].get("pending_publication", false):
+		return host.fail("SCRIPT_NOT_READY", "Save and publish this script before attaching it.", {"uri": uri})
+	if states[uri].get("reload_revision") != info.revision:
+		var loaded: Dictionary = reload_source(uri)
+		if loaded.has("error"): return loaded
+	elif states[uri].get("reload_error", OK) != OK:
+		return host.fail("SCRIPT_LOAD_FAILED", "The current script failed to load; repair it before attaching.", {"uri": uri, "revision": info.revision})
+	return {}
 
 func source_matches(uri: String, revision: String) -> bool:
 	var info: Dictionary = source_info(uri)

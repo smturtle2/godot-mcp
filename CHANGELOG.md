@@ -1,3 +1,10 @@
+# v4.7.2_16
+
+- Apply source patches through edit, optional source save, editor reload, bindings, and optional binding-owner save. Source validation runs only when `get_diagnostics` is explicitly requested; diagnostics describe captured snapshots with `basis:"snapshot"` and do not provide a whole-project live fingerprint guarantee.
+- Default source-operation waits to 15000 ms and diagnostic waits to 1500 ms. Pending work continues, and resume retries unfinished phases while retaining completed binding steps; accepted source revisions repeat only the needed save and reload work.
+- Distinguish `SCRIPT_NOT_READY` and `SCRIPT_LOAD_FAILED` during source preparation from `TYPE_MISMATCH`; accept any candidate in comma-separated resource type alternatives.
+- Exclude imported data from authored dirty-save and run requirements; `save_as` exports an imported resource as an authored copy. Return a concise text summary alongside structured tool data, with normal phase and runtime details available through `get_operation_result`.
+
 # v4.7.2_15
 
 - Execute MCP Undo through the native editor command, keeping its action stacks aligned and preserving newer user actions.

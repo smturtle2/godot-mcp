@@ -1,6 +1,5 @@
 import asyncio
 import copy
-import json
 from pathlib import Path
 
 import pytest
@@ -41,7 +40,7 @@ def run_call(project: Path, responses: dict, name: str, arguments: dict, *, brid
                 await asyncio.gather(task, return_exceptions=True)
 
     result = asyncio.run(exercise())
-    assert json.loads(result.content[0].text) == result.structured_content
+    assert result.content[0].text and not result.content[0].text.startswith("{")
     return result
 
 
@@ -149,7 +148,7 @@ def test_partial_create_preserves_applied_file_diagnostics_and_recovery(tmp_path
 
 def test_invalid_diagnostics_are_a_successful_result(tmp_path):
     payload = {"sources": [validation_source("res://broken.gd", "invalid", False)],
-               "current": True, "state": "invalid", "scope": "requested_sources", "coverage": {"complete": True}}
+               "basis": "snapshot", "state": "invalid", "scope": "requested_sources", "coverage": {"complete": True}}
     result = run_call(tmp_path, {"get_diagnostics": payload}, "get_diagnostics", {"uris": ["res://broken.gd"]})
     assert not result.is_error
     assert result.structured_content["sources"][0]["state"] == "invalid"

@@ -103,11 +103,11 @@ async def test_editor_authoring(editor):
     r = await call(b, 'apply_script_changes', patch='*** Begin Patch\n*** Add File: res://behavior.gd\n+extends Node2D\n+\n+func react(value: int) -> void:\n+\tposition.x = value\n*** End Patch', save=True, attachments=[{'script': {'uri': 'res://behavior.gd', 'node': ref('Sprite')}}])
     assert r['attachments'] == [{'script': {'uri': 'res://behavior.gd', 'node': ref('Sprite')}}]
     assert r['status'] == 'completed'
-    assert r['documents'][0]['validation']['state'] == 'valid'
+    assert 'validation' not in r['documents'][0]
     r = await call(b, 'read_scripts', documents=[{'uri': 'res://behavior.gd'}])
     revisions = r['base_revisions']
     r = await call(b, 'apply_script_changes', patch='*** Begin Patch\n*** Update File: res://behavior.gd\n@@\n-\tposition.x = value\n+\tposition.x = value * 2\n*** End Patch', base_revisions=revisions)
-    assert r['documents'][0]['validation']['state'] == 'valid'
+    assert 'validation' not in r['documents'][0]
     assert r['undo']['edit_id']
     with pytest.raises(ToolError) as caught:
         await call(b, 'apply_script_changes', patch='*** Begin Patch\n*** Update File: res://behavior.gd\n@@\n-\tposition.x = value\n+\tposition.x = value * 3\n*** End Patch', base_revisions=revisions)

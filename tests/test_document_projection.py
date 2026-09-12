@@ -30,15 +30,17 @@ def save_failure(uri: str, index: int = 0) -> dict:
 
 def test_receipt_uses_explicit_essential_fields_without_mutating_snapshot():
     value = canonical(document())
-    value.update(pending_save=["res://a.gd"], runtime_application="constant long explanation", future_detail={"verbose": True})
+    value.update(pending_save=["res://a.gd"], phase="completed", phases={"save": "done"}, resumable=False,
+                 runtime={"state": "confirmed"}, runtime_application="constant long explanation",
+                 future_detail={"verbose": True})
+    value["undo"]["steps"] = [{"edit_id": "edit-1", "scope": "live_sources"}]
     original = copy.deepcopy(value)
     receipt = project_result("apply_script_changes", value)
     assert value == original
     assert receipt == {
         "operation_id": "operation-test-1", "details_retained": True, "status": "completed",
         "documents": [{"uri": "res://a.gd", "effect": "updated", "state": "modified", "revision": "current", "validation": {"state": "valid"}}],
-        "undo": {"edit_id": "edit-1", "scope": ["live_sources"], "retained_files": []},
-        "validation_snapshot": "snapshot-1",
+        "undo": {"edit_id": "edit-1"},
     }
     receipt["documents"][0]["revision"] = "changed receipt"
     assert value == original
@@ -57,8 +59,9 @@ def test_receipt_preserves_conflicts_stale_validation_and_recovery():
     for key in ("uri", "revision", "applied_revision", "conflict", "disk_revision", "base_disk_revision", "baseline_known"):
         assert projected[key] == record[key]
     assert projected["validation"] == {"state": "pending", "checked_state": "invalid", "revision": "checked"}
-    for key in ("status", "failures", "pending_save", "undo"):
+    for key in ("status", "failures", "pending_save"):
         assert brief[key] == value[key]
+    assert brief["undo"] == {"edit_id": "edit-1"}
     Draft202012Validator(DOCUMENT_OUTPUT).validate(brief)
 
 
@@ -79,15 +82,19 @@ def test_created_source_attachment_and_stale_verdict_keep_separate_boundaries():
                 "prerequisite": "Repair source first."}
     value = canonical(record, status="partial")
     value.update(attachments=[attachment], failures=[{"phase": "bindings", "code": "INCOMPATIBLE_BASE", "message": "Cannot attach.", "node": node, "recovery": recovery}],
-                 pending_save=[record["uri"], node["scene"]], undo={"edit_id": "attach-1", "scope": ["attachments"], "retained_files": [record["uri"]]})
+                 pending_save=[record["uri"], node["scene"]], undo={"edit_id": "attach-1", "scope": ["attachments"],
+                 "retained_files": [record["uri"]], "steps": [{"edit_id": "source-1", "scope": "live_sources"},
+                 {"edit_id": "attach-1", "scope": "attachments"}]})
     projected = project_result("apply_script_changes", value)
     Draft202012Validator(DOCUMENT_OUTPUT).validate(projected)
     current = projected["documents"][0]
     assert current["state"] == "modified" and current["save"]["state"] == "saved"
     assert current["revision"] == "current" and current["applied_revision"] == "written"
     assert current["validation"] == {"state": "pending", "checked_state": "valid", "revision": "written"}
-    for key in ("attachments", "failures", "pending_save", "undo"):
+    for key in ("attachments", "failures", "pending_save"):
         assert projected[key] == value[key]
+    assert projected["undo"] == {"edit_id": "attach-1", "retained_files": [record["uri"]], "steps": [
+        {"edit_id": "source-1", "scope": "live_sources"}, {"edit_id": "attach-1", "scope": "attachments"}]}
 
 
 def test_save_as_identity_and_observed_saves_survive_while_history_stays_in_snapshot():
