@@ -60,7 +60,13 @@ def result_summary(name: str, result: dict) -> str:
     if "error" in result:
         error = result["error"]
         return f"{error.get('code', 'ERROR')}: {error.get('message', 'Request failed.')}"
-    summary = f"{name}: {result.get('status', 'completed')}."
+    operation = result if name == "get_operation_result" else None
+    if operation is not None:
+        result = operation.get("result", {})
+    status = result.get("status", "unknown" if operation is not None else "completed")
+    if operation is not None and operation.get("pending") is True:
+        status = "pending"
+    summary = f"{name}: {status}."
     for key in ("documents", "nodes", "sources", "assets"):
         if isinstance(result.get(key), list):
             summary += f" {len(result[key])} {key}."
@@ -70,6 +76,7 @@ def result_summary(name: str, result: dict) -> str:
         summary += " " + "; ".join(f"{item.get('code', 'ERROR')}: {item.get('message', '')}" for item in failures[:3])
         if len(failures) > 3:
             summary += f"; {len(failures) - 3} more failures in the result."
-    if result.get("status") == "pending" and result.get("operation_id"):
-        summary += f" Operation: {result['operation_id']}."
+    operation_id = (operation if operation is not None else result).get("operation_id")
+    if status == "pending" and operation_id:
+        summary += f" Operation: {operation_id}."
     return summary

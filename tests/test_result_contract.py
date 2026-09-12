@@ -117,6 +117,7 @@ def test_mutation_receipt_and_detail_query_preserve_bridge_payload_without_reexe
     assert "disk_revision" not in record and "entries" not in record["validation"]
     details = run_call(tmp_path, {}, "get_operation_result", {"operation_id": payload["operation_id"]}, bridge=bridge)
     assert not details.is_error and details.structured_content["result"] == original
+    assert details.content[0].text.startswith("get_operation_result: completed.")
     assert [name for name, _ in bridge.calls] == ["_source_snapshot", "_apply_source_plan", "get_operation_result"]
     plan_arguments = bridge.calls[1][1]
     assert plan_arguments["documents"][0]["uri"] == uri
@@ -124,6 +125,14 @@ def test_mutation_receipt_and_detail_query_preserve_bridge_payload_without_reexe
     assert plan_arguments["editor_epoch"] == "test"
     Draft202012Validator(SPECS["apply_script_changes"]["outputSchema"]).validate(result.structured_content)
     Draft202012Validator(SPECS["get_operation_result"]["outputSchema"]).validate(details.structured_content)
+
+    snapshot["pending"] = True
+    snapshot["result"] = {**payload, "status": "pending", "complete": False}
+    pending = run_call(tmp_path, {}, "get_operation_result", {"operation_id": payload["operation_id"]}, bridge=bridge)
+    assert pending.structured_content["pending"] is True
+    assert pending.structured_content["result"]["status"] == "pending"
+    assert pending.content[0].text.startswith("get_operation_result: pending.")
+    assert payload["operation_id"] in pending.content[0].text
 
 
 def test_partial_create_preserves_applied_file_diagnostics_and_recovery(tmp_path):

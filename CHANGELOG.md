@@ -1,3 +1,7 @@
+# v4.7.2_17
+
+- Summarize operation queries using the tracked operation's pending flag and result status, so a successful status lookup does not imply that the underlying work has completed.
+
 # v4.7.2_16
 
 - Apply source patches through edit, optional source save, editor reload, bindings, and optional binding-owner save. Source validation runs only when `get_diagnostics` is explicitly requested; diagnostics describe captured snapshots with `basis:"snapshot"` and do not provide a whole-project live fingerprint guarantee.
