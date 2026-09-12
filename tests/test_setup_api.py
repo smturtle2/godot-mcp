@@ -136,7 +136,7 @@ async def test_create_project_resumes_after_launch_failure_without_replacing_edi
     assert not failed["editor_started"] and failed["failures"][0]["phase"] == "launch"
     content = (project / "project.godot").read_text() + '\n[custom]\nvalue=42\n'
     (project / "project.godot").write_text(content)
-    completed = await setup.create(project, "Ignored on retry", "godot")
+    completed = await setup.create(project, "Ignored on retry", "godot", {"DISPLAY": ":explicit"})
     assert completed["status"] == "completed" and completed["connected"]
     assert (project / "project.godot").read_text() == content
     assert launches[-1][0] == ("godot", "--editor", "--path", str(project))
