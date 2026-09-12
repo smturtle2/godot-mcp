@@ -1,3 +1,11 @@
+# v4.7.2_19
+
+- Make saved scenes and Godot nodes the baseline for editor-editable components. Clarify runtime-only authoring costs and preserve native UI interaction when customizing layout and appearance.
+- Add `create_project` to create an empty project, install its plugin, launch Godot, and connect. Retain setup outcomes so retries preserve project settings and reuse the tracked editor process.
+- Add per-tool help with `get_guide(section="tools", tool="...")`, including arguments and examples. Replace the full-description index with concise tool roles and shorten repeated tool-list prose.
+- Summarize source application, saving, editor reload, diagnostics, and runtime evidence consistently in source/save receipts and operation queries. Default explicit diagnostics to a 15-second wait; no additional validation is triggered.
+- Inject events scheduled for the same time without intervening frame waits. Add optional before/after property observations and actual input/condition timing to `send_input`; observations and captures retain their own timestamps.
+
 # v4.7.2_18
 
 - Add `get_guide`, a bundled English manual available before connecting a Godot editor. Its optional `section` selects `start`, `development`, `model`, `work`, `recovery`, or `tools`; omission returns the index.

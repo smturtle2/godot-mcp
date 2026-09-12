@@ -26,14 +26,51 @@ def _document(record: dict) -> dict:
     return result
 
 
+def _state_summary(result: dict) -> dict:
+    """Summarize recorded evidence only; never query, validate or infer runtime adoption."""
+    records = result.get("documents", [])
+    phases = result.get("phases", {})
+    changed = [item for item in records if item.get("effect") in {"created", "updated"}]
+    saved = [item for item in records if "save" in item]
+    reloads = [item["live_reload"] for item in records if "live_reload" in item]
+    validations = []
+    for item in records:
+        verdict = item.get("validation")
+        if verdict:
+            stale = verdict.get("revision", item.get("revision")) != item.get("revision")
+            validations.append("stale" if stale else verdict.get("state", "unavailable"))
+
+    def states(values: list[str], default: str) -> str:
+        return ", ".join(dict.fromkeys(values)) if values else default
+
+    saving_requested = any(phases.get(key) not in (None, "not_requested") for key in ("save_sources", "save_bindings"))
+    save_state = f"{sum(item['save'].get('state') == 'saved' for item in saved)}/{max(len(saved), len(changed) if saving_requested else 0)}" if saved else "pending" if saving_requested else "not_requested"
+    unfinished_saves = [phases[key] for key in ("save_sources", "save_bindings")
+                        if phases.get(key) not in (None, "completed", "not_requested")]
+    if saved and unfinished_saves:
+        save_state += " recorded; " + states(unfinished_saves, "pending")
+    return {
+        "applied": "staged" if phases.get("source") == "staged" else f"{len(changed)}/{len(changed)}" if changed else "not_requested",
+        "saved": save_state,
+        "editor_reload": states(reloads, "not_requested"),
+        "diagnostics": states(validations, "not_requested"),
+        "runtime": "unverified",
+    }
+
+
 def project_result(name: str, result: Any) -> Any:
     """Select explicit receipt fields; never mutate a snapshot or execute work."""
+    if isinstance(result, dict) and name == "get_operation_result" and "documents" in result.get("result", {}):
+        detail = copy.deepcopy(result)
+        detail["result"]["state_summary"] = _state_summary(result["result"])
+        return detail
     if not isinstance(result, dict) or name not in DOCUMENT_TOOLS or "error" in result or result.get("preview"):
         return copy.deepcopy(result)
     receipt = _pick(result, ("operation_id", "status", "details_retained", "result_query_error", "editor_events"))
     if result.get("status") != "completed":
         receipt.update(_pick(result, ("phase", "resumable", "save_receipt")))
     receipt["documents"] = [_document(record) for record in result.get("documents", [])]
+    receipt["state_summary"] = _state_summary(result)
     if result.get("failures"):
         receipt["failures"] = copy.deepcopy(result["failures"])
     if result.get("attachments"):
@@ -67,10 +104,15 @@ def result_summary(name: str, result: dict) -> str:
     if operation is not None and operation.get("pending") is True:
         status = "pending"
     summary = f"{name}: {status}."
-    for key in ("documents", "nodes", "sources", "assets"):
-        if isinstance(result.get(key), list):
-            summary += f" {len(result[key])} {key}."
-            break
+    if "state_summary" in result:
+        labels = {"applied": "Applied", "saved": "Saved", "editor_reload": "Editor reload",
+                  "diagnostics": "Diagnostics", "runtime": "Runtime"}
+        summary += " " + " · ".join(f"{labels[key]}: {value}" for key, value in result["state_summary"].items()) + "."
+    else:
+        for key in ("documents", "nodes", "sources", "assets"):
+            if isinstance(result.get(key), list):
+                summary += f" {len(result[key])} {key}."
+                break
     failures = result.get("failures", [])
     if failures:
         summary += " " + "; ".join(f"{item.get('code', 'ERROR')}: {item.get('message', '')}" for item in failures[:3])

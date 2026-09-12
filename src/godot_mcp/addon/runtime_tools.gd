@@ -105,6 +105,8 @@ func dispatch(method: String, p: Dictionary) -> Dictionary:
 			if condition.has("node") and condition.node.get("node", {}).get("run_id", "") != run_id: return host.fail("STALE_RUN", "The condition refers to another run.")
 			if condition.has("property") and condition.property.get("node", {}).get("run_id", "") != run_id: return host.fail("STALE_RUN", "The condition refers to another run.")
 			if condition.has("signal") and condition.signal.get("node", {}).get("run_id", "") != run_id: return host.fail("STALE_RUN", "The condition refers to another run.")
+	for selection: Dictionary in p.get("observe", []):
+		if selection.node.get("run_id", "") != run_id: return host.fail("STALE_RUN", "An observation refers to another run.")
 	var result: Dictionary = await host.debugger.request(method, p)
 	result.run_id = run_id
 	if result.get("capture") is Dictionary and result.capture.has("uri"): result.capture.run_id = run_id

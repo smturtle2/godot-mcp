@@ -64,7 +64,7 @@ async def test_guide_is_available_without_a_project_and_matches_published_sectio
     async with Client(create_server(home=tmp_path / "empty-home")) as client:
         tools = (await client.list_tools()).tools
         guide = next(tool for tool in tools if tool.name == "get_guide")
-        assert set(guide.input_schema["properties"]) == {"section"}
+        assert set(guide.input_schema["properties"]) == {"section", "tool"}
         sections = guide.input_schema["properties"]["section"]["enum"]
         index = await client.call_tool("get_guide", {})
         assert not index.is_error
@@ -76,7 +76,17 @@ async def test_guide_is_available_without_a_project_and_matches_published_sectio
             assert len(result.content) == 1 and result.content[0].type == "text"
             assert f"Section: {section}" in result.content[0].text
         assert "`create_nodes`" in result.content[0].text
-        for arguments in ({"section": "development/ui"}, {"section": "../server.py"}, {"project": "/tmp/project"}):
+        from jsonschema import Draft202012Validator
+
+        from godot_mcp.catalog import SPECS
+        from godot_mcp.tool_examples import EXAMPLES
+        assert set(EXAMPLES) == set(SPECS)
+        for name, example in EXAMPLES.items():
+            Draft202012Validator(SPECS[name]["inputSchema"]).validate(example)
+        detail = await client.call_tool("get_guide", {"section": "tools", "tool": "create_nodes"})
+        assert not detail.is_error and '"parent_key"' in detail.content[0].text
+        assert "## Example" in detail.content[0].text and "## Current tool catalog" not in detail.content[0].text
+        for arguments in ({"tool": "create_nodes"}, {"section": "tools", "tool": "missing"}, {"section": "development/ui"}, {"section": "../server.py"}, {"project": "/tmp/project"}):
             result = await client.call_tool("get_guide", arguments)
             assert result.is_error
             assert result.structured_content["error"]["code"] == "INVALID_ARGUMENT"

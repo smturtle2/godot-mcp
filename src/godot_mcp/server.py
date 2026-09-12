@@ -53,7 +53,9 @@ def _tool_result(name: str, result: dict, *, project: str | None = None) -> type
 
 def create_server(project: Path | None = None, bridge: EditorBridge | None = None, *, home: Path | None = None) -> Server:
     from .installer import default_home, initialize_project
+    from .project_setup import ProjectSetup
     install_home = home or default_home()
+    project_setup = ProjectSetup(install_home)
     fixed_bridge = bridge or (EditorBridge(project) if project else None)
     directory = None
     if fixed_bridge is None:
@@ -81,14 +83,20 @@ def create_server(project: Path | None = None, bridge: EditorBridge | None = Non
             validate_arguments(validators[params.name], arguments)
             if params.name == "get_guide":
                 return types.CallToolResult(content=[types.TextContent(
-                    type="text", text=read_guide(arguments.get("section")),
+                    type="text", text=read_guide(arguments.get("section"), arguments.get("tool")),
                 )], is_error=False)
-            if params.name == "install_plugin":
+            if params.name in {"install_plugin", "create_project"}:
                 target = Path(arguments["project"])
                 if not target.is_absolute():
                     raise ToolError("INVALID_ARGUMENT", "project must be an absolute path.")
                 if fixed_bridge and target.resolve() != fixed_bridge.project:
                     raise ToolError("PROJECT_MISMATCH", "This dedicated server is bound to a different project.")
+                if params.name == "create_project":
+                    validate_values(target, arguments)
+                    result = await project_setup.create(target, arguments.get("name"), arguments.get("editor"))
+                    if result.get("connected") and directory:
+                        selected_project = str(target.resolve())
+                    return _tool_result(params.name, result)
                 try:
                     result = await asyncio.to_thread(initialize_project, target, install_home)
                 except (OSError, ValueError) as exc:

@@ -23,7 +23,7 @@ class SourceTools:
     async def call(self, name: str, arguments: dict) -> dict:
         if name == "get_operation_result":
             return await self.operation(arguments["operation_id"], arguments.get("wait_ms", 0))
-        wait_ms = arguments.get("wait_ms", 1500 if name == "get_diagnostics" else 15000)
+        wait_ms = arguments.get("wait_ms", 15000)
         if name in {"resume_script_changes", "get_diagnostics"}:
             result = await self.bridge.call(name, {key: value for key, value in arguments.items() if key != "wait_ms"})
         else:

@@ -1,13 +1,14 @@
 """Bundled manual and its section index; independent of project/editor state."""
 from __future__ import annotations
 
+import json
 from importlib.resources import files
 
 from .version import ENGINE_VERSION, PRODUCT_VERSION
 
 GUIDE_SECTIONS = {
     "start": ("Start here", "Capabilities, connection, project selection, and support limits."),
-    "development": ("Godot development", "Technical choices for scenes, resources, signals, UI, animation, and worlds."),
+    "development": ("Godot development", "Author editable scenes, resources, signals, UI, animation, and worlds."),
     "model": ("Editor concepts", "Editor, file, and runtime state; references, values, sharing, and imports."),
     "work": ("Using Godot MCP", "Task-based usage and examples for editing, running, debugging, and exporting."),
     "recovery": ("Recovery", "Incomplete operations, conflicts, saving, Undo, restoration, and connection failures."),
@@ -15,8 +16,22 @@ GUIDE_SECTIONS = {
 }
 
 
-def read_guide(section: str | None = None) -> str:
+def read_guide(section: str | None = None, tool: str | None = None) -> str:
     header = f"Godot MCP {PRODUCT_VERSION} · Godot {ENGINE_VERSION}"
+    if tool is not None:
+        from .bridge import ToolError
+        from .catalog import SPECS, TOOL_HELP
+        from .tool_examples import EXAMPLES
+
+        if section != "tools" or tool not in SPECS:
+            raise ToolError("INVALID_ARGUMENT", "tool requires section=tools and a published tool name.")
+        spec = SPECS[tool]
+        parts = [f"{header} · Section: tools · Tool: {tool}", "", TOOL_HELP[tool],
+                 "", "## Arguments", "", "```json", json.dumps(spec["inputSchema"], indent=2), "```"]
+        if tool in EXAMPLES:
+            parts.extend(["", "## Example", "", "Replace example paths and returned identifiers with your own.",
+                          "", "```json", json.dumps(EXAMPLES[tool], indent=2), "```"])
+        return "\n".join(parts) + "\n"
     if section is None:
         lines = ["# Godot MCP guide", "", header, "",
                  "Inspect, edit, run, and debug Godot projects through the live editor.",
@@ -33,10 +48,12 @@ def read_guide(section: str | None = None) -> str:
         from .catalog import TOOL_SPECS
 
         lines = [body.rstrip(), "", "## Current tool catalog", "",
-                 "Argument schemas are published in MCP tools/list.", "",
+                 'Read one tool with get_guide({"section":"tools","tool":"create_nodes"}).',
+                 "Argument schemas are also published in MCP tools/list.", "",
                  "| Tool | Description |", "|---|---|"]
         for spec in TOOL_SPECS:
-            description = spec["description"].replace("|", "\\|").replace("\n", " ")
+            description = spec["description"].split(". ", 1)[0].rstrip(".") + "."
+            description = description.replace("|", "\\|").replace("\n", " ")
             lines.append(f"| `{spec['name']}` | {description} |")
         body = "\n".join(lines) + "\n"
     return f"{header} · Section: {section}\n\n{body}"

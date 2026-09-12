@@ -4,6 +4,8 @@ Paths in tool arguments are project URIs such as `res://main.tscn`; local files 
 
 For shared rules about revisions, scopes, and operation receipts, see `get_guide` section `model`. For recovery of pending work, stale plans, conflicts, or deletions, see `get_guide` section `recovery`.
 
+For source-change and save receipts, and their `get_operation_result` snapshots, `state_summary` combines `applied`, `saved`, `editor_reload`, `diagnostics`, and `runtime`. These are recorded operation facts: when no diagnostics were requested, its value is `not_requested`, and `runtime` remains `unverified`; use runtime observations to establish behavior separately. Operation snapshots are historical and do not describe the current project state.
+
 ## Scenes and nodes
 
 Start by reading the project and editor state:
@@ -209,7 +211,7 @@ Use the returned `run_id` with `inspect_runtime`, `wait_for_condition`, `send_in
 {"node":{"run_id":"<run-id>","path":"/root/Level/Player"},"depth":1}
 ```
 
-Inject named events with `send_input`; action events are convenient for configured controls:
+Inject named events with `send_input`; action events are convenient for configured controls. Events with the same `at_ms` are injected together without a per-event frame yield, and each `injections` entry records the event `index`, scheduled `at_ms`, actual `injected_at_usec`, and engine `frame`. `processed` counts injected events, not successful game actions:
 
 ```json
 {
@@ -220,11 +222,19 @@ Inject named events with `send_input`; action events are convenient for configur
 }
 ```
 
-Key, mouse button, mouse motion, touch, drag, and action events are each explicit variants. Without `capture_uri`, pointer coordinates use viewport pixels. With a capture URI, they use capture pixels; held mouse and key state persists until released. If observation or capture fails after input was applied, retry the observation rather than replaying the input.
+Use `observe` to read selected runtime properties before and after injection:
+
+```json
+{"run_id":"<run-id>","events":[{"event":{"action":{"action":"ui_accept","pressed":true}}}],"observe":[{"node":{"run_id":"<run-id>","path":"/root/Level/Player"},"properties":["visible","position"]}]}
+```
+
+Each `observations.before` and `observations.after` entry includes `values`, `exists`, `unavailable_properties`, `observed_at_usec`, and `frame`. A missing node or property is explicitly unavailable; no value is inferred. If `wait_for` is supplied, its result includes `observed_at_usec`/`frame` and `satisfied_at_usec`/`satisfied_frame`; signal conditions record the first emission. A `capture_after` result has its own timestamp/frame. The after read occurs after the condition and before capture, but these steps are not atomic and do not pause the game or prove causality. If observation or capture fails after input was applied, retry the observation rather than replaying the input.
+
+Key, mouse button, mouse motion, touch, drag, and action events are each explicit variants. Without `capture_uri`, pointer coordinates use viewport pixels. With a capture URI, they use capture pixels; held mouse and key state persists until released.
 
 `capture_viewport` can capture `game`, `editor_2d`, `editor_3d`, or an `editor_window`. A game capture uses the run ID; editor-window capture uses a `window_id` from `get_context.editor_windows`. The result includes a `godot://` capture URI, dimensions, crop, scale, and coordinate mapping. Pass that URI to later input when coordinate alignment matters.
 
-For current source validation, call `get_diagnostics`; it reports a captured snapshot and may return an operation ID. Use `get_logs` for historical editor or run entries. They answer different questions: logs show history, while diagnostics validate the requested snapshot. For a suspended GDScript run, use `inspect_debugger` with the returned `pause_id` or frame handles, then `debug_control` with `pause`, `continue`, `step_over`, or `step_into`. Frame handles become stale after continuing. `set_breakpoints` manages MCP-owned breakpoints while preserving user breakpoints.
+For current source validation, call `get_diagnostics`; it reports a captured snapshot and waits up to 15 seconds by default. Set `wait_ms` to `0` for an immediate result or pending operation; there is no extra validation step. Use `get_logs` for historical editor or run entries. They answer different questions: logs show history, while diagnostics validate the requested snapshot. For a suspended GDScript run, use `inspect_debugger` with the returned `pause_id` or frame handles, then `debug_control` with `pause`, `continue`, `step_over`, or `step_into`. Frame handles become stale after continuing. `set_breakpoints` manages MCP-owned breakpoints while preserving user breakpoints.
 
 ## Settings and export
 

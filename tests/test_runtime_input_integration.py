@@ -75,6 +75,7 @@ def test_mouse_masks_release_retention_and_capture_transforms(tmp_path):
         '''extends SceneTree
 const Runtime = preload("res://addons/godot_mcp/runtime.gd")
 class Receiver extends Node:
+    signal motion_seen
     var masks: Array[int] = []
     var motions: Array[Vector2] = []
     var relatives: Array[Vector2] = []
@@ -85,6 +86,7 @@ class Receiver extends Node:
     func _input(event: InputEvent) -> void:
         if event is InputEventMouseMotion:
             masks.append(event.button_mask)
+            motion_seen.emit()
             motions.append(event.position)
             relatives.append(event.relative)
         elif event is InputEventMouseButton:
@@ -97,12 +99,15 @@ class Receiver extends Node:
 func _initialize() -> void:
     var helper := Runtime.new()
     var receiver := Receiver.new()
+    receiver.name = "Receiver"
     root.add_child(helper)
     root.add_child(receiver)
     await process_frame
     var capture := {"rect": Rect2i(10, 20, 100, 50), "size": Vector2i(100, 50), "original": Vector2i(200, 100), "viewport": Vector2(400, 300)}
     helper.captures["godot://capture"] = capture
-    var batch := await helper.send_input({"capture_uri": "godot://capture", "events": [
+    var batch := await helper.send_input({"capture_uri": "godot://capture",
+        "observe": [{"node": {"path": "/root/Receiver"}, "properties": ["masks", "missing"]}],
+        "wait_for": {"signal": {"node": {"path": "/root/Receiver"}, "signal": "motion_seen"}}, "events": [
         {"event": {"mouse_button": {"button": "left", "position": {"x": 1, "y": 1}, "pressed": true}}},
         {"event": {"mouse_motion": {"position": {"x": 50, "y": 25}, "relative": {"x": 5, "y": 4}}}},
         {"event": {"mouse_button": {"button": "right", "position": {"x": 50, "y": 25}, "pressed": true}}},
@@ -113,6 +118,16 @@ func _initialize() -> void:
         {"event": {"mouse_motion": {"position": {"x": 50, "y": 25}, "relative": {"x": 5, "y": 4}}}}
     ]})
     assert(batch.processed == 8 and batch.held_inputs == 0)
+    assert(batch.injections.size() == 8)
+    for injection: Dictionary in batch.injections:
+        assert(injection.frame == batch.injections[0].frame)
+    assert(batch.observations.before[0].properties.masks == [])
+    assert(batch.observations.after[0].properties.masks == [1, 3, 2, 0])
+    assert(batch.observations.after[0].unavailable_properties == ["missing"])
+    assert(batch.observations.before[0].observed_at_usec <= batch.injections[0].injected_at_usec)
+    assert(batch.condition.satisfied and batch.condition.satisfied_at_usec >= batch.injections[0].injected_at_usec)
+    assert(batch.condition.satisfied_at_usec <= batch.condition.observed_at_usec)
+    assert(batch.condition.observed_at_usec <= batch.observations.after[0].observed_at_usec)
     assert(receiver.masks == [1, 3, 2, 0])
     assert(receiver.motions[0] == Vector2(120, 135) and receiver.relatives[0] == Vector2(10, 12))
     var pressed := await helper.send_input({"events": [{"event": {"mouse_button": {"button": "left", "pressed": true}}}]})

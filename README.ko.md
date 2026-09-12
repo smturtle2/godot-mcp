@@ -69,6 +69,6 @@ Godot에서 기존 프로젝트를 닫고 에이전트에게 프로젝트의 절
 
 ## 참고
 
-[설정](src/godot_mcp/guide_content/start.md) · [Godot 개발](src/godot_mcp/guide_content/development.md) · [에디터 개념](src/godot_mcp/guide_content/model.md) · [사용법](src/godot_mcp/guide_content/work.md) · [복구](src/godot_mcp/guide_content/recovery.md) · [49개 도구](docs/tools.md)
+[설정](src/godot_mcp/guide_content/start.md) · [Godot 개발](src/godot_mcp/guide_content/development.md) · [에디터 개념](src/godot_mcp/guide_content/model.md) · [사용법](src/godot_mcp/guide_content/work.md) · [복구](src/godot_mcp/guide_content/recovery.md) · [50개 도구](docs/tools.md)
 
 [기여 및 서버 개발](docs/development.md) · [변경 기록](CHANGELOG.md) · [EUPL-1.2](LICENSE)

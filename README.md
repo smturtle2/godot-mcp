@@ -69,6 +69,6 @@ Edits use the current editor state. Source changes remain unsaved by default; sa
 
 ## Reference
 
-[Setup](src/godot_mcp/guide_content/start.md) · [Godot development](src/godot_mcp/guide_content/development.md) · [Editor concepts](src/godot_mcp/guide_content/model.md) · [Usage](src/godot_mcp/guide_content/work.md) · [Recovery](src/godot_mcp/guide_content/recovery.md) · [49 tools](docs/tools.md)
+[Setup](src/godot_mcp/guide_content/start.md) · [Godot development](src/godot_mcp/guide_content/development.md) · [Editor concepts](src/godot_mcp/guide_content/model.md) · [Usage](src/godot_mcp/guide_content/work.md) · [Recovery](src/godot_mcp/guide_content/recovery.md) · [50 tools](docs/tools.md)
 
 [Contributing and server development](docs/development.md) · [Changelog](CHANGELOG.md) · [EUPL-1.2](LICENSE)

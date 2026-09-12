@@ -1,12 +1,15 @@
 import asyncio
 import json
+import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from mcp.client.session import ClientSession
 from mcp.shared.memory import create_client_server_memory_streams
 
 from godot_mcp import installer
+from godot_mcp.bridge import ToolError
 from godot_mcp.server import create_server
 from godot_mcp.version import PRODUCT_VERSION
 
@@ -96,3 +99,48 @@ def test_fixed_server_rejects_other_project(tmp_path):
                 await asyncio.gather(task, return_exceptions=True)
 
     asyncio.run(exercise())
+
+
+@pytest.mark.asyncio
+async def test_create_project_resumes_after_launch_failure_without_replacing_edits(tmp_path, monkeypatch):
+    from godot_mcp import project_setup
+
+    home, _ = make_home(tmp_path)
+    project = tmp_path / "new-game"
+    connected = False
+    launches = []
+
+    class Bridge:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def call(self, *_args):
+            if not connected:
+                raise ToolError("EDITOR_DISCONNECTED", "Not open yet.")
+            return {"project": str(project), "active_scene": None}
+
+    async def launch(*args, **kwargs):
+        nonlocal connected
+        launches.append((args, kwargs))
+        if len(launches) == 1:
+            raise FileNotFoundError("Editor path is missing")
+        connected = True
+        return SimpleNamespace(pid=os.getpid())
+
+    monkeypatch.setattr(project_setup, "EditorBridge", Bridge)
+    monkeypatch.setattr(project_setup.asyncio, "create_subprocess_exec", launch)
+    setup = project_setup.ProjectSetup(home)
+    failed = await setup.create(project, 'Game "Name"', "missing-godot")
+    assert failed["status"] == "partial" and failed["project_created"] and failed["plugin_installed"]
+    assert not failed["editor_started"] and failed["failures"][0]["phase"] == "launch"
+    content = (project / "project.godot").read_text() + '\n[custom]\nvalue=42\n'
+    (project / "project.godot").write_text(content)
+    completed = await setup.create(project, "Ignored on retry", "godot")
+    assert completed["status"] == "completed" and completed["connected"]
+    assert (project / "project.godot").read_text() == content
+    assert launches[-1][0] == ("godot", "--editor", "--path", str(project))
+    assert launches[-1][1]["env"]["GODOT_MCP_HOME"] == str(home)
+    assert (await setup.create(project))["connected"] and len(launches) == 2
+    existing = make_project(tmp_path)
+    with pytest.raises(ToolError, match="new or empty"):
+        await setup.create(existing)

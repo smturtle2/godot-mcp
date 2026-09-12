@@ -152,7 +152,9 @@ DOCUMENT_FAILURE = {"type": "object", "properties": {
     "phase": S, "code": S, "message": TEXT, "uri": S, "node": REF, "resource": S,
     "details": {"type": "object", "additionalProperties": True}, "recovery": RECOVERY,
 }, "required": ["phase", "code", "message"], "additionalProperties": True}
+STATE_SUMMARY = obj({key: S for key in ("applied", "saved", "editor_reload", "diagnostics", "runtime")})
 DOCUMENT_SNAPSHOT = output_schema({
+    "state_summary": STATE_SUMMARY,
     "status": enum("pending", "completed", "partial", "failed"), "complete": B,
     "documents": {"type": "array", "items": DOCUMENT_RECORD}, "failures": arr(DOCUMENT_FAILURE, 1000),
     "undo": UNDO_RESULT, "pending_save": {"type": "array", "items": S}, "pending": arr(S, 200),
@@ -171,6 +173,7 @@ DOCUMENT_RECEIPT_RECORD = obj({
     "save_receipt": {"type": "object", "additionalProperties": True},
 }, ("uri",))
 DOCUMENT_OUTPUT = output_schema({
+    "state_summary": STATE_SUMMARY,
     "project": S, "operation_id": S, "status": enum("pending", "completed", "partial", "failed"),
     "details_retained": {**B, "description": "The detailed snapshot is currently retained; query get_operation_result before the session or retention window ends."},
     "documents": {"type": "array", "items": DOCUMENT_RECEIPT_RECORD},
@@ -217,7 +220,13 @@ ASSET_PREVIEW = {
 }
 ASSET_OUTPUT = {"type": "object", "oneOf": [ASSET_PREVIEW, ASSET_OPERATION, ERROR_RESULT]}
 ASSET_OPERATION_OUTPUT = {"type": "object", "oneOf": [ASSET_OPERATION, ERROR_RESULT]}
-SEND_INPUT_OUTPUT = output_schema({**OPERATION_RESULT, "processed": integer(), "elapsed_ms": SAFE_COUNTER, "held_inputs": SAFE_COUNTER, "condition": {"type": "object", "additionalProperties": True}, "capture": {"type": "object", "additionalProperties": True}, "recovery": TEXT, "run_id": S, "observed_at_usec": SAFE_COUNTER, "frame": SAFE_COUNTER}, ("status", "complete", "failures", "pending", "processed", "elapsed_ms", "held_inputs"))
+INPUT_STAMP = obj({"injected_at_usec": SAFE_COUNTER, "frame": SAFE_COUNTER})
+PROPERTY_OBSERVATION = obj({"node": RUN_REF, "exists": B, "properties": PROPS,
+                            "unavailable_properties": arr(S, 32), "observed_at_usec": SAFE_COUNTER, "frame": SAFE_COUNTER})
+SEND_INPUT_OUTPUT = output_schema({**OPERATION_RESULT,
+    "injections": arr(obj({**INPUT_STAMP["properties"], "index": integer(), "at_ms": integer(0, 60000)}), 1000),
+    "release": obj({**INPUT_STAMP["properties"], "count": integer()}),
+    "observations": obj({"before": arr(PROPERTY_OBSERVATION, 32), "after": arr(PROPERTY_OBSERVATION, 32)}), "processed": integer(), "elapsed_ms": SAFE_COUNTER, "held_inputs": SAFE_COUNTER, "condition": {"type": "object", "additionalProperties": True}, "capture": {"type": "object", "additionalProperties": True}, "recovery": TEXT, "run_id": S, "observed_at_usec": SAFE_COUNTER, "frame": SAFE_COUNTER}, ("status", "complete", "failures", "pending", "processed", "elapsed_ms", "held_inputs"))
 IMPORT_ASSETS_OUTPUT = output_schema({**OPERATION_RESULT, "operation_id": S, "phase": enum("writing", "importing", "reimporting", "settling", "completed", "failed"), "saved": B, "files_written": arr(S, 500), "options_changed": arr(S, 500), "changed_paths": arr(S, 1500), "assets": arr(obj({"uri": RES, "imported": B, "resource": {"anyOf": [obj({"$type": {"const": "Resource"}, "uri": S, "class": S}, ("$type", "uri", "class")), {"type": "null"}]}, "preservation": TEXT}, ("uri", "imported", "resource", "preservation")), 500), "edit_id": NULLABLE_STRING, "undo_state": enum("pending", "available", "unavailable", "not_needed"), "undo": UNDO_RESULT}, ("status", "complete", "failures", "pending", "operation_id", "phase", "saved", "files_written", "options_changed", "changed_paths", "assets", "edit_id", "undo_state", "undo"))
 OPERATION_DETAIL_OUTPUT = output_schema({
     "operation_id": S, "tool": S, "editor_epoch": S, "recorded_at_usec": SAFE_COUNTER,
@@ -292,7 +301,8 @@ def tool(name, description, properties, required=(), *, read=False, destructive=
 
 
 TOOL_SPECS = [
-    tool("get_guide", "Read the Godot MCP manual. Omit section to get the index; select a section to read its English content.", {"section": {**enum(*GUIDE_SECTIONS), "description": "Manual section to read. Omit to read the index."}}, read=True, idempotent=True, project_bound=False),
+    tool("get_guide", "Read the Godot MCP manual. Omit section to get the index; select a section to read its English content.", {"section": {**enum(*GUIDE_SECTIONS), "description": "Manual section to read. Omit to read the index."}, "tool": {**S, "description": "One published tool name; requires section=tools."}}, read=True, idempotent=True, project_bound=False),
+    tool("create_project", "Create an empty project, install the plugin, open Godot and connect. Retries resume this tool’s recorded setup without replacing project settings.", {"project": {**S, "description": "Absolute path to a new or empty project directory."}, "name": {**S, "description": "Project name; defaults to the folder name."}, "editor": {**S, "description": "Godot executable; defaults to GODOT or godot/godot4 on PATH."}}, ("project",), project_bound=False),
     tool("install_plugin", "Install and enable the bundled plugin in an existing Godot project before connecting to the editor. Close the project in Godot first. Creates a rollback backup and registers project discovery.", {"project": {**S, "description": "Required absolute path to the directory containing project.godot."}}, ("project",)),
     tool("get_context", "Read versions, active scene, selection, unsaved documents, pending operations, run state and durable deletion records for restore or purge. Use scope=progress for a compact operation status; set runtime_details=true to request fresh runtime source provenance.", {"scope": enum("all", "project", "editor", "runtime", "progress"), "runtime_details": B}, read=True),
     tool("get_operation_result", "Read retained results without repeating work; wait_ms optionally waits for running work. Snapshots preserve operation-time facts; current_undo/current_resume report live eligibility. The editor retains 64 results/16 MiB per session, evicting completed records first.", {"operation_id": S, "wait_ms": integer(0, 60000)}, ("operation_id",), read=True, output=OPERATION_DETAIL_OUTPUT),
@@ -332,12 +342,12 @@ TOOL_SPECS = [
     tool("inspect_runtime", "Read the actual game's scene tree or node properties with run ID and observation time.", {"node": RUN_REF, "properties": arr(S), "depth": integer(0, 10)}, ("node",), read=True),
     tool("capture_viewport", "Return actual PNG pixels plus viewport/capture coordinates. viewport.kind may select game, editor_2d, editor_3d, or an editor_window; detached windows are selected with window_id from get_context.editor_windows. window_id and scene assert the selected window or active scene and do not open it. framing defaults to current; scene and selection frame editor content, while explicit bounds require non-current framing. rect is a pixel crop; max_width and max_height explicitly downscale, and omitted limits preserve original pixels. Window captures return client area. Headless rendering returns an explicit unsupported error.", {"viewport": obj({"kind": enum("game", "editor_2d", "editor_3d", "editor_window"), "run_id": S, "index": integer(0, 3), "window_id": integer(0), "scene": RES}, ("kind",)), "framing": {**enum("current", "scene", "selection"), "default": "current"}, "bounds_2d": obj({"origin": V2, "size": V2}, ("origin", "size")), "bounds_3d": obj({"position": V3, "size": V3}, ("position", "size")), "rect": {**obj({"origin": I2, "size": SIZE}, ("origin", "size")), "description": "Pixel crop applied after capture."}, "max_width": {**integer(1, 4096), "description": "Explicit output downscale width; omitted preserves original pixels."}, "max_height": {**integer(1, 4096), "description": "Explicit output downscale height; omitted preserves original pixels."}}, ("viewport",), read=True),
     tool("wait_for_condition", "Observe scene/node/property/signal conditions until satisfied or a bounded timeout; returns last observation.", {"run_id": S, "condition": CONDITION, "timeout_ms": integer(1, 60000), "poll_ms": integer(1, 1000)}, ("run_id", "condition"), read=True),
-    tool("get_diagnostics", "Explicitly validate a captured snapshot of sources and unsaved dependencies; no historical logs or guarantee that the live project remains unchanged. Unrelated live edits do not discard captured results. Returns an operation_id immediately when validation exceeds wait_ms (default 1500); use get_operation_result to wait without repeating work. Omitted uris selects authored project sources, excluding this plugin. Counts describe only complete snapshot coverage; pending/unavailable is not error-free. Snapshots exclude dot caches/symlinks and are limited to 512 MiB/20,000 files.", {"uris": arr(RES, 200), "kinds": arr(enum("error", "warning"), 2), "wait_ms": integer(0, 15000)}, read=True, output=DIAGNOSTICS_OUTPUT),
+    tool("get_diagnostics", "Explicitly validate a captured snapshot of sources and unsaved dependencies; no historical logs or guarantee that the live project remains unchanged. Unrelated live edits do not discard captured results. Returns an operation_id immediately when validation exceeds wait_ms (default 15000); use get_operation_result to wait without repeating work. Omitted uris selects authored project sources, excluding this plugin. Counts describe only complete snapshot coverage; pending/unavailable is not error-free. Snapshots exclude dot caches/symlinks and are limited to 512 MiB/20,000 files.", {"uris": arr(RES, 200), "kinds": arr(enum("error", "warning"), 2), "wait_ms": {**integer(0, 15000), "default": 15000}}, read=True, output=DIAGNOSTICS_OUTPUT),
     tool("get_logs", "Read historical editor or selected-run log entries with cursor pagination. Log occurrence or silence does not establish whether current source is valid or a runtime problem is resolved.", {"run_id": S, "kinds": arr(enum("error", "warning", "log"), 3), "since": SAFE_COUNTER, "limit": integer(1, 1000)}, read=True, output=LOGS_OUTPUT),
     tool("sample_performance", "Measure supported Performance monitors over time; include units, sample count and conditions. Unknown metrics are rejected.", {"run_id": S, "duration_ms": integer(1, 60000), "metrics": arr(enum("process_ms", "physics_ms", "fps", "memory_bytes", "objects", "draw_calls", "primitives", "video_memory_bytes"), 8, 1)}, ("run_id", "duration_ms", "metrics"), read=True),
     tool("run_scene", "Start a game with a recorded startup source snapshot and runtime handshake. save_uris explicitly lists documents to persist first; other unsaved documents block startup. Optional revisions guard the expected sources. Startup file evidence does not prove changed behavior; use runtime observations.", {"scene": RES, "save_uris": arr(RES, 200), "revisions": REVISIONS, "restart": B}, output=RUN_OUTPUT),
     tool("stop_game", "Stop the specified run, release injected input, and confirm process termination.", {"run_id": S}, ("run_id",), idempotent=True),
-    tool("send_input", "Send timestamped key/mouse/touch/action events through Godot input; each event selects exactly one named kind payload. Capture position and relative coordinates use capture pixels. Timeouts retain applied effects; retry failed observation or capture rather than repeating the mutation.", {"run_id": S, "events": arr(INPUT, 1000, 1), "capture_uri": S, "wait_for": CONDITION, "timeout_ms": integer(1, 60000), "capture_after": B, "release_after": B}, ("run_id", "events"), output=SEND_INPUT_OUTPUT),
+    tool("send_input", "Send timestamped key/mouse/touch/action events through Godot input; each event selects exactly one named kind payload. Capture position and relative coordinates use capture pixels. Timeouts retain applied effects; retry failed observation or capture rather than repeating the mutation.", {"run_id": S, "events": arr(INPUT, 1000, 1), "capture_uri": S, "wait_for": CONDITION, "timeout_ms": integer(1, 60000), "capture_after": B, "release_after": B, "observe": arr(obj({"node": RUN_REF, "properties": arr(S, 32, 1)}, ("node", "properties")), 32, 1)}, ("run_id", "events"), output=SEND_INPUT_OUTPUT),
     tool("inspect_debugger", "Read suspended DAP stack/scopes/variables; frame handles become stale on continue. GDScript is supported.", {"run_id": S, "frame_id": integer(), "pause_id": S, "variables_reference": integer()}, ("run_id",), read=True),
     tool("set_breakpoints", "Add/remove MCP-owned breakpoints while preserving user breakpoints. replace=true replaces only MCP-owned entries.", {"breakpoints": arr(obj({"uri": RES, "line": integer(1, 1_000_000), "enabled": B}, ("uri", "line")), 500), "replace": B}, ("breakpoints",), idempotent=True),
     tool("debug_control", "Pause, continue, step over or step into GDScript. step_out reports unsupported on Godot 4.7.2.", {"run_id": S, "action": enum("pause", "continue", "step_over", "step_into", "step_out"), "pause_id": S}, ("run_id", "action")),
@@ -348,7 +358,30 @@ TOOL_SPECS = [
     tool("update_settings", "Apply project settings/input actions/autoload changes with undo; save project.godot explicitly to persist.", {"settings": PROPS, "remove": arr(S), "input_actions": arr(obj({"name": S, "events": arr(MAPPING_EVENT, 64), "deadzone": {"type": "number", "minimum": 0, "maximum": 1}, "remove": B}, ("name",))), "autoloads": arr(obj({"name": S, "path": RES, "enabled": B, "remove": B}, ("name",)))}),
     tool("export_build", "Export with a real Godot preset via CLI and verify the output exists. Export success does not imply artifact execution.", {"preset": S, "output": FILE, "debug": B, "timeout_ms": integer(1000, 180000)}, ("preset", "output")),
 ]
+TOOL_HELP = {spec["name"]: spec["description"] for spec in TOOL_SPECS}
+_SHORT_DESCRIPTIONS = {
+    "get_guide": "Read the manual index, a section, or one tool's usage and schema (section=tools, tool=name).",
+    "get_context": "Read connected projects and editor state. scope=progress reports active work; runtime_details opts into source provenance.",
+    "get_operation_result": "Read retained operation results; wait_ms waits without repeating work. Snapshots and live recovery eligibility are separate.",
+    "find_assets": "Search names, source text or symbols with query; mode=list lists files, folders and drafts without a query.",
+    "delete_assets": "Preview then delete files/folders and companions. References block by default; allow_broken reports broken links. Permanent mode has no recovery.",
+    "purge_deleted_assets": "Preview then permanently purge deletion backups. Purged backups cannot be restored or undone.",
+    "restore_assets": "Restore a recoverable deletion or selected paths, including companions; returns actual restored files and synchronization state.",
+    "save_documents": "Save listed authored documents; extra save scope must be explicit. Imports manage imported resources. Saving does not validate; Undo retains disk writes.",
+    "read_scripts": "Read live sources/drafts and revisions for subsequent patches. Ranges use one-based Unicode columns and exclusive ends.",
+    "apply_script_changes": "Apply a context patch with read revisions; optionally save and bind sources. Waits up to 15s; query pending work by ID. Diagnostics are explicit; reload=defer pauses reload.",
+    "resume_script_changes": "Resume a blocked source bundle without replaying completed work. After repairs, provide every original source's current revision.",
+    "capture_viewport": "Capture game/editor pixels with scene and coordinate metadata. framing fits editor content; rect crops; omitted size limits preserve original pixels.",
+    "get_diagnostics": "Validate a source snapshot on request; waits up to 15s by default. Query pending operation_id without repeating. Pending/unavailable is not error-free; historical errors use get_logs.",
+    "run_scene": "Start a game and confirm its handshake. Unsaved documents require explicit save_uris; startup evidence does not establish behavior.",
+    "send_input": "Inject scheduled inputs; optionally observe properties before/after, wait for a condition and capture. Returns injection timing, not gameplay success. Do not replay after observation failure.",
+}
+for _spec in TOOL_SPECS:
+    if _spec["name"] in _SHORT_DESCRIPTIONS:
+        _spec["description"] = _SHORT_DESCRIPTIONS[_spec["name"]]
+TOOL_HELP["send_input"] += " observe selects runtime nodes and properties for before/after reads. injection records contain event index, scheduled at_ms, injected_at_usec and frame. Equal-time events are injected together; condition, observation and capture timestamps identify their own moments. processed counts injected events, not game actions."
+
 # Canonical input contracts and published tool schemas are the same definitions.
 DOCUMENT_TOOLS = {"apply_script_changes", "resume_script_changes", "save_documents"}
 SPECS = {spec["name"]: spec for spec in TOOL_SPECS}
-assert len(SPECS) == len(TOOL_SPECS) == 49
+assert len(SPECS) == len(TOOL_SPECS) == 50

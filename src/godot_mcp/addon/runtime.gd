@@ -219,6 +219,9 @@ func make_event(spec: Dictionary, capture_uri: String) -> Dictionary:
 	return {"event": event, "kind": kind, "payload": data}
 
 func signal_seen(watch: Dictionary) -> void:
+	if not watch.seen:
+		watch.satisfied_at_usec = Time.get_ticks_usec()
+		watch.satisfied_frame = Engine.get_process_frames()
 	watch.seen = true
 
 func watch_condition(condition: Dictionary) -> Dictionary:
@@ -245,6 +248,15 @@ func unwatch(watch: Dictionary) -> void:
 		watch.node.disconnect(watch.signal, watch.callback)
 
 func observation(condition: Dictionary, watch: Dictionary) -> Dictionary:
+	var result: Dictionary = _condition_value(condition, watch)
+	result.observed_at_usec = Time.get_ticks_usec()
+	result.frame = Engine.get_process_frames()
+	if result.get("satisfied", false):
+		result.satisfied_at_usec = watch.get("satisfied_at_usec", result.observed_at_usec)
+		result.satisfied_frame = watch.get("satisfied_frame", result.frame)
+	return result
+
+func _condition_value(condition: Dictionary, watch: Dictionary) -> Dictionary:
 	var selected: Dictionary = select_case(condition, ["scene", "node", "property", "signal"], "condition")
 	if selected.has("error"): return selected
 	var kind: String = selected.kind
@@ -287,6 +299,18 @@ func wait_condition(condition: Dictionary, timeout: int, poll: int, existing_wat
 	last.timed_out = not last.has("error") and not last.get("satisfied", false)
 	return last
 
+func observe_properties(selections: Array) -> Array:
+	var observations: Array = []
+	for selection: Dictionary in selections:
+		var node := node_at(selection.node)
+		var values: Dictionary = {}
+		var missing: Array = []
+		for property: String in selection.properties:
+			if is_instance_valid(node) and property_exists(node, property): values[property] = Codec.encode(node.get(property))
+			else: missing.append(property)
+		observations.append({"node": selection.node, "exists": is_instance_valid(node), "properties": values, "unavailable_properties": missing, "observed_at_usec": Time.get_ticks_usec(), "frame": Engine.get_process_frames()})
+	return observations
+
 func send_input(p: Dictionary) -> Dictionary:
 	var events: Array[Dictionary] = []
 	var previous: int = -1
@@ -299,6 +323,9 @@ func send_input(p: Dictionary) -> Dictionary:
 		events.append({"at_ms": time, "event": made.event, "kind": made.kind, "payload": made.payload})
 	var watch: Dictionary = watch_condition(p.get("wait_for", {}))
 	if watch.has("error"): return watch
+	var observations: Dictionary = {}
+	if p.has("observe"): observations.before = observe_properties(p.observe)
+	var injections: Array = []
 	var start: int = Time.get_ticks_msec()
 	for item: Dictionary in events:
 		while Time.get_ticks_msec() - start < item.at_ms: await get_tree().process_frame
@@ -310,6 +337,7 @@ func send_input(p: Dictionary) -> Dictionary:
 			item.event.button_mask = held_mouse_buttons
 		elif item.event is InputEventMouseMotion:
 			item.event.button_mask = held_mouse_buttons
+		injections.append({"index": injections.size(), "at_ms": item.at_ms, "injected_at_usec": Time.get_ticks_usec(), "frame": Engine.get_process_frames()})
 		Input.parse_input_event(item.event)
 		if item.payload.has("pressed"):
 			var key: String = event_key(item)
@@ -317,9 +345,13 @@ func send_input(p: Dictionary) -> Dictionary:
 				pass
 			elif item.payload.pressed: held[key] = item.event.duplicate()
 			else: held.erase(key)
-		await get_tree().process_frame
-	var result: Dictionary = {"processed": events.size(), "elapsed_ms": Time.get_ticks_msec() - start}
-	if p.get("release_after", false): release_input()
+	# Due events share an injection frame. Yield once after the batch; this is
+	# not a claim that every gameplay reaction has finished processing.
+	await get_tree().process_frame
+	var result: Dictionary = {"processed": events.size(), "elapsed_ms": Time.get_ticks_msec() - start, "injections": injections}
+	if p.get("release_after", false):
+		result.release = {"injected_at_usec": Time.get_ticks_usec(), "frame": Engine.get_process_frames(), "count": held.size()}
+		release_input()
 	result.held_inputs = held.size()
 	var failures: Array = []
 	if p.has("wait_for"):
@@ -329,6 +361,9 @@ func send_input(p: Dictionary) -> Dictionary:
 		elif not result.condition.get("satisfied", false):
 			failures.append(OperationResult.failure("condition", {"code": "CONDITION_TIMEOUT", "message": "Input was sent, but the requested condition was not satisfied before the timeout."}))
 	else: unwatch(watch)
+	if p.has("observe"):
+		observations.after = observe_properties(p.observe)
+		result.observations = observations
 	if p.get("capture_after", false):
 		result.capture = await capture({})
 		if result.capture.has("error"): failures.append(OperationResult.failure("capture", result.capture.error))

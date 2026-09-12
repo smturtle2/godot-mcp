@@ -16,10 +16,10 @@ def assert_invalid(name, value):
     assert list(validator(name).iter_errors(value)), f"unexpectedly accepted: {value!r}"
 
 
-def test_catalog_has_49_unique_tools_and_valid_json_schemas():
+def test_catalog_has_50_unique_tools_and_valid_json_schemas():
     names = [spec["name"] for spec in TOOL_SPECS]
-    assert len(names) == 49
-    assert len(set(names)) == 49
+    assert len(names) == 50
+    assert len(set(names)) == 50
     assert set(names) == set(SPECS)
     for spec in TOOL_SPECS:
         assert spec["inputSchema"]["type"] == "object"

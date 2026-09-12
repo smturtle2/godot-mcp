@@ -39,6 +39,7 @@ def test_receipt_uses_explicit_essential_fields_without_mutating_snapshot():
     assert value == original
     assert receipt == {
         "operation_id": "operation-test-1", "details_retained": True, "status": "completed",
+        "state_summary": {"applied": "1/1", "saved": "not_requested", "editor_reload": "not_requested", "diagnostics": "valid", "runtime": "unverified"},
         "documents": [{"uri": "res://a.gd", "effect": "updated", "state": "modified", "revision": "current", "validation": {"state": "valid"}}],
         "undo": {"edit_id": "edit-1"},
     }
@@ -62,6 +63,7 @@ def test_receipt_preserves_conflicts_stale_validation_and_recovery():
     for key in ("status", "failures", "pending_save"):
         assert brief[key] == value[key]
     assert brief["undo"] == {"edit_id": "edit-1"}
+    assert brief["state_summary"]["diagnostics"] == "stale"
     Draft202012Validator(DOCUMENT_OUTPUT).validate(brief)
 
 

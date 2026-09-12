@@ -116,7 +116,10 @@ def test_mutation_receipt_and_detail_query_preserve_bridge_payload_without_reexe
     record = result.structured_content["documents"][0]
     assert "disk_revision" not in record and "entries" not in record["validation"]
     details = run_call(tmp_path, {}, "get_operation_result", {"operation_id": payload["operation_id"]}, bridge=bridge)
-    assert not details.is_error and details.structured_content["result"] == original
+    assert not details.is_error
+    retained = dict(details.structured_content["result"])
+    assert retained.pop("state_summary") == result.structured_content["state_summary"]
+    assert retained == original
     assert details.content[0].text.startswith("get_operation_result: completed.")
     assert [name for name, _ in bridge.calls] == ["_source_snapshot", "_apply_source_plan", "get_operation_result"]
     plan_arguments = bridge.calls[1][1]

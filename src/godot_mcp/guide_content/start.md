@@ -17,6 +17,14 @@ Expand these paths to absolute paths in client configuration. On Linux/macOS, us
 
 ## Link and select a project
 
+To start a new project, or prepare an empty directory, call `create_project` with its required absolute path. The optional `name` defaults to the directory name; `editor` defaults to `GODOT`, then `godot` or `godot4` on `PATH`:
+
+```json
+{"project":"/absolute/path/to/new-game","name":"New Game"}
+```
+
+This creates `project.godot`, reuses the bundled plugin installer, launches the editor, and waits up to 15 seconds for the MCP handshake. The result reports `project_created`, `plugin_installed`, `editor_started`, and `connected`; a partial result includes failures and can be retried. Retries resume the recorded setup, preserve existing project settings, and do not launch another editor while the recorded process is alive. Use `install_plugin` for an unrelated existing project.
+
 The server and the project's editor plugin are separate parts. With the project closed in Godot, install its plugin through `install_plugin`:
 
 ```json
